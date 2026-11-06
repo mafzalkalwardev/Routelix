@@ -29,7 +29,7 @@ Routelix helps teams run sales campaigns around the clock with natural voice int
 
 ## SEO Keywords
 
-`sales automation` `outbound sales automation` `AI calling platform` `voice AI sales agent` `lead qualification automation` `AI follow-up software`
+`Routelix` `sales automation` `outbound sales automation` `AI calling platform` `voice AI sales agent` `AI voice agent` `automated sales campaigns` `lead qualification automation` `appointment setting automation` `voicemail detection` `answering machine detection` `speech-to-text` `text-to-speech` `realtime voice AI` `call center automation` `CRM automation` `sales follow-up software` `Python FastAPI Selenium`
 
 ---
 
