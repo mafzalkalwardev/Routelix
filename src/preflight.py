@@ -29,6 +29,8 @@ def check_env() -> CheckResult:
 
 
 def check_groq_api(api_key: Optional[str] = None) -> CheckResult:
+    if os.getenv("OFFLINE_MODE", "").lower() in ("1", "true", "yes", "on"):
+        return CheckResult("Groq API", "warn", "Offline mode enabled — external Groq call skipped")
     key = api_key or os.getenv("GROQ_API_KEY", "")
     if not key or key.startswith("your_"):
         return CheckResult("Groq API", "fail", "GROQ_API_KEY not set — cannot connect")

@@ -100,6 +100,16 @@ def test_interruption_recovery_does_not_call_llm(mock_groq):
     assert reply == "You are right, go ahead. What were you saying?"
 
 
+def test_do_not_keep_calling_is_treated_as_dnc(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("unused")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    reply = agent.respond_to("I'm not interested, please don't keep calling.")
+    assert agent.state.interest_level == "DNC"
+    assert "do-not-call" in reply
+
+
 def test_should_end_call_false_initially(mock_groq):
     _, mock_client = mock_groq
     mock_client.chat.completions.create.return_value = _make_completion("ok")

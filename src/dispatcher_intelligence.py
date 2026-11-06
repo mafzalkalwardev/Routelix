@@ -362,7 +362,13 @@ def build_pricing_reply(state: DispatcherConversationState, utterance: str) -> O
 
 def build_guardrail_reply(state: DispatcherConversationState, utterance: str) -> Optional[str]:
     lower = utterance.lower().strip()
-    if any(phrase in lower for phrase in ("remove me", "stop calling", "do not call", "don't call")):
+    if any(
+        phrase in lower
+        for phrase in (
+            "remove me", "stop calling", "do not call", "don't call",
+            "don't keep calling", "do not keep calling", "take me off",
+        )
+    ):
         state.interest_level = "DNC"
         return "Of course. I will mark you do-not-call right now. Sorry for the interruption, and have a safe day."
     if any(phrase in lower for phrase in ("guarantee", "guaranteed", "promise me loads", "promise loads")):

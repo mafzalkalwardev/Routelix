@@ -29,10 +29,9 @@ PROSPECT_LINES = [
     "Hello?",
     "Who is this?",
     "How did you get my number?",
-    "I already have a dispatcher, I'm good.",
-    "What do you guys charge?",
-    "Can you guarantee I'll make at least five grand a week?",
-    "Okay, look, I'm actually between dispatchers right now. What's the next step?",
+    "I'm busy. What is this about?",
+    "I'm not interested, please don't keep calling.",
+    "Actually, send me a short summary and I'll review it.",
     "Sure, Thursday afternoon works. What time?",
 ]
 
@@ -61,14 +60,19 @@ def _print_info(text: str) -> None:
 
 # ── Core simulation ──────────────────────────────────────────────────────────
 
-def run_simulation(text_only: bool = False, device_index: int | None = None) -> None:
+def run_simulation(
+    text_only: bool = False,
+    device_index: int | None = None,
+    offline: bool = False,
+) -> None:
     from src.config import Config
     from src.conversation_agent import ConversationAgent
 
     # Load configuration (.env must exist)
     try:
         cfg = Config.load()
-        cfg.validate()
+        if not offline:
+            cfg.validate()
     except SystemExit as exc:
         print(f"Config error: {exc}")
         sys.exit(1)
@@ -101,9 +105,11 @@ def run_simulation(text_only: bool = False, device_index: int | None = None) -> 
         callback_number=cfg.callback_number,
         contact_name="Demo Carrier",
     )
+    if offline:
+        _install_offline_responder(agent)
 
     print("\n" + "=" * 60)
-    print("  INDUS TRANSPORTS LLC — Call Simulation")
+    print("  ROUTELIX — Offline Call Simulation")
     print(f"  Agent: {cfg.agent_name}  |  Company: {cfg.company_name}")
     mode = "text-only" if text_only else "TTS audio"
     print(f"  Mode: {mode}  |  Transcript: {transcript_path.name}")
@@ -164,10 +170,35 @@ def _setup_tts(cfg, device_index: int | None):
             device_index = int(default_info["index"])
 
         voice = getattr(cfg, "tts_voice", "en-US-GuyNeural") or "en-US-GuyNeural"
-        return RealtimeTTS(device_index=device_index, voice=voice)
+        return RealtimeTTS(
+            device_index=device_index,
+            engine=getattr(cfg, "tts_engine", "edge"),
+            voice=voice,
+            piper_model_path=getattr(cfg, "piper_model_path", None),
+            piper_length_scale=getattr(cfg, "piper_length_scale", 1.0),
+            piper_noise_scale=getattr(cfg, "piper_noise_scale", 0.667),
+            piper_noise_w_scale=getattr(cfg, "piper_noise_w_scale", 0.8),
+        )
     except Exception as exc:
         print(f"TTS setup error: {exc}")
         return None
+
+
+def _install_offline_responder(agent) -> None:
+    """Keep local script testing deterministic and fully network-free."""
+    def complete(_self, max_tokens: int = 80) -> str:
+        if _self._turn_count == 0:
+            return f"Hi, this is {_self.agent_name} with {_self.company_name}. How are things going?"
+        return "Thanks for sharing that. I can send a short summary and follow up at a better time."
+
+    def raw_complete(_self, _prompt: str, max_tokens: int = 80) -> str:
+        if "closing line" in _prompt.lower() or "end the call" in _prompt.lower():
+            return "Thanks for your time. Take care."
+        return f"Hi, this is {_self.agent_name} with {_self.company_name}. How are things going?"
+
+    import types
+    agent._complete = types.MethodType(complete, agent)
+    agent._raw_complete = types.MethodType(raw_complete, agent)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -178,9 +209,11 @@ def _parse() -> argparse.Namespace:
                    help="Print conversation only — no TTS audio")
     p.add_argument("--device", type=int, default=None, metavar="N",
                    help="sounddevice output device index for TTS (default: system default)")
+    p.add_argument("--offline", action="store_true",
+                   help="Use deterministic local replies without Groq or browser access")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse()
-    run_simulation(text_only=args.text_only, device_index=args.device)
+    run_simulation(text_only=args.text_only, device_index=args.device, offline=args.offline)
