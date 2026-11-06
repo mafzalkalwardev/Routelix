@@ -126,9 +126,28 @@
         <input type="text" name="stt_model" value="{{ cfg.stt_model or 'whisper-large-v3-turbo' }}" />
       </div>
       <div class="form-group">
-        <label>TTS Voice (edge-tts)</label>
+        <label>TTS Engine</label>
+        <select name="tts_engine">
+          <option value="edge" {% if (cfg.tts_engine or 'edge') in ['edge', 'edge-tts'] %}selected{% endif %}>Edge TTS (default)</option>
+          <option value="piper" {% if cfg.tts_engine == 'piper' %}selected{% endif %}>Piper (local ONNX)</option>
+        </select>
+        <div class="field-hint">Piper requires a local voice model under the configured path.</div>
+      </div>
+      <div class="form-group">
+        <label>TTS Voice</label>
         <input type="text" name="tts_voice" value="{{ cfg.tts_voice or 'en-US-GuyNeural' }}" />
-        <div class="field-hint">e.g. en-US-GuyNeural · en-US-JennyNeural</div>
+        <div class="field-hint">Edge voice name; Piper uses the selected ONNX model.</div>
+      </div>
+      <div class="form-group">
+        <label>Piper Model Path</label>
+        <input type="text" name="piper_model_path" value="{{ cfg.piper_model_path or 'models/piper/en_US-lessac-medium.onnx' }}" />
+        <div class="field-hint">Relative to the Routelix runtime folder or an absolute Windows path.</div>
+      </div>
+      <div class="form-group">
+        <label class="check-row">
+          <input type="checkbox" name="tts_allow_sapi_fallback" {% if cfg.tts_allow_sapi_fallback %}checked{% endif %} />
+          Allow SAPI fallback if Edge TTS fails
+        </label>
       </div>
     </div>
   </div>

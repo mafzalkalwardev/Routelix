@@ -81,7 +81,8 @@ _CONFIG_KEYS = [
     "contacts_file", "profile_name", "callback_number", "agent_name",
     "company_name", "company_website", "company_context",
     "groq_model", "loopback_device", "call_timeout", "call_max_duration",
-    "capture_device", "tts_voice", "stt_model", "vad_threshold",
+    "capture_device", "tts_engine", "tts_voice", "piper_model_path",
+    "tts_allow_sapi_fallback", "stt_model", "vad_threshold",
     "answered_speak_delay_seconds", "wait_for_human_audio",
     "human_audio_timeout_seconds", "answer_confirm_polls",
     "min_ring_seconds", "max_ring_seconds", "voicemail_detect_seconds",
@@ -126,7 +127,10 @@ def _load_config() -> dict:
             "call_timeout": cfg.call_timeout,
             "call_max_duration": cfg.call_max_duration,
             "capture_device": cfg.capture_device,
+            "tts_engine": cfg.tts_engine,
             "tts_voice": cfg.tts_voice,
+            "piper_model_path": cfg.piper_model_path,
+            "tts_allow_sapi_fallback": cfg.tts_allow_sapi_fallback,
             "stt_model": cfg.stt_model,
             "vad_threshold": cfg.vad_threshold,
             "answered_speak_delay_seconds": cfg.answered_speak_delay_seconds,
@@ -730,7 +734,8 @@ async def api_save_settings(request: Request):
             except (ValueError, TypeError):
                 pass
     for f in (
-        "wait_for_human_audio", "tts_warmup", "force_requested_slots",
+        "wait_for_human_audio", "tts_warmup", "tts_allow_sapi_fallback",
+        "force_requested_slots",
         "allow_shared_audio_routes",
     ):
         if f in allowed:

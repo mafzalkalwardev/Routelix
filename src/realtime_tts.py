@@ -441,12 +441,29 @@ def _play_numpy_to_device(data: np.ndarray, samplerate: int, device_index: int) 
 
 def save_edge_tts_wav(text: str, output_path: str | Path, voice: str = VOICE_GUY) -> Path:
     """Write voicemail/script audio with the same edge-tts voice as live calls."""
+    return save_tts_wav(text, output_path, engine="edge", voice=voice)
+
+
+def save_tts_wav(
+    text: str,
+    output_path: str | Path,
+    *,
+    engine: str = "edge",
+    voice: str = VOICE_GUY,
+    piper_model_path: str | Path | None = None,
+) -> Path:
+    """Write script audio using the selected TTS backend."""
     import soundfile as sf
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not text.strip():
         raise ValueError("Cannot synthesize empty text")
+    if engine.strip().lower() == "piper":
+        data, rate = _piper_synthesize(text, _load_piper_voice(piper_model_path))
+        sf.write(str(output_path), data, rate)
+        logger.info("Piper WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)
+        return output_path
     if not _edge_available():
         from src.tts import save_text_to_speech
 

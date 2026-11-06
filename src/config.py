@@ -30,7 +30,10 @@ _DEFAULTS = {
     "call_max_duration": 90,
     # Realtime conversation settings
     "capture_device": "default",
+    "tts_engine": "edge",
     "tts_voice": "en-US-GuyNeural",
+    "piper_model_path": "models/piper/en_US-lessac-medium.onnx",
+    "tts_allow_sapi_fallback": False,
     "stt_model": "whisper-large-v3-turbo",
     "vad_threshold": 0.015,
     # Answer detection — controls when Tony first speaks after CONNECTED is detected
@@ -114,9 +117,19 @@ class Config:
         self.capture_device: str = os.getenv(
             "CAPTURE_DEVICE", j.get("capture_device", _DEFAULTS["capture_device"])
         )
+        self.tts_engine: str = os.getenv(
+            "TTS_ENGINE", j.get("tts_engine", _DEFAULTS["tts_engine"])
+        ).strip().lower()
         self.tts_voice: str = os.getenv(
             "TTS_VOICE", j.get("tts_voice", _DEFAULTS["tts_voice"])
         )
+        self.piper_model_path: str = os.getenv(
+            "PIPER_MODEL_PATH", j.get("piper_model_path", _DEFAULTS["piper_model_path"])
+        )
+        self.tts_allow_sapi_fallback: bool = os.getenv(
+            "TTS_ALLOW_SAPI_FALLBACK",
+            str(j.get("tts_allow_sapi_fallback", _DEFAULTS["tts_allow_sapi_fallback"])),
+        ).lower() not in ("false", "0", "no")
         self.stt_model: str = os.getenv(
             "STT_MODEL", j.get("stt_model", _DEFAULTS["stt_model"])
         )
@@ -188,6 +201,10 @@ class Config:
             raise SystemExit(
                 f"GROQ_MODEL '{self.groq_model}' is not valid. "
                 "Use e.g. llama-3.3-70b-versatile. See console.groq.com for model list."
+            )
+        if self.tts_engine not in {"edge", "edge-tts", "piper"}:
+            raise SystemExit(
+                f"TTS_ENGINE '{self.tts_engine}' is not supported. Use 'edge' or 'piper'."
             )
 
     @classmethod

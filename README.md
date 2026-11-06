@@ -65,7 +65,7 @@ TTS_ENGINE=piper
 PIPER_MODEL_PATH=models/piper/en_US-lessac-medium.onnx
 ```
 
-Piper is currently isolated to live TTS synthesis. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
+Piper is wired through realtime replies, screening audio, and pre-generated voicemail assets. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
 
 ---
 

@@ -189,7 +189,9 @@ def _run_call(
     dry_run: bool,
     realtime: bool = False,
     capture_device: str = "default",
+    tts_engine: str = "edge",
     tts_voice: str = "en-US-GuyNeural",
+    piper_model_path: str = "models/piper/en_US-lessac-medium.onnx",
     stt_model: str = "whisper-large-v3-turbo",
     vad_threshold: float = 0.015,
     groq_api_key: str = "",
@@ -257,9 +259,15 @@ def _run_call(
     voicemail_text_path.write_text(voicemail_text, encoding="utf-8")
 
     try:
-        from src.realtime_tts import save_edge_tts_wav
+        from src.realtime_tts import save_tts_wav
 
-        save_edge_tts_wav(voicemail_text, voicemail_path, voice=tts_voice)
+        save_tts_wav(
+            voicemail_text,
+            voicemail_path,
+            engine=tts_engine,
+            voice=tts_voice,
+            piper_model_path=piper_model_path,
+        )
     except Exception as exc:
         logger.warning("[%d] edge-tts voicemail generation failed (%s); using SAPI fallback", index, exc)
         save_text_to_speech(voicemail_text, voicemail_path)
@@ -343,7 +351,9 @@ def _run_call(
                 validate_tts_output_device(loopback_device_index)
                 shared_tts = RealtimeTTS(
                     device_index=loopback_device_index,
+                    engine=tts_engine,
                     voice=tts_voice,
+                    piper_model_path=piper_model_path,
                     use_cache=tts_warmup,
                     allow_sapi_fallback=tts_allow_sapi_fallback,
                 )
@@ -356,6 +366,8 @@ def _run_call(
                         screening_purpose_text,
                         logger,
                         tts_voice=tts_voice,
+                        tts_engine=tts_engine,
+                        piper_model_path=piper_model_path,
                         tts=shared_tts,
                         allow_sapi_fallback=tts_allow_sapi_fallback,
                     )
@@ -376,7 +388,9 @@ def _run_call(
                 callback_number=callback_number,
                 loopback_device_index=loopback_device_index,
                 capture_device=capture_device,
+                tts_engine=tts_engine,
                 tts_voice=tts_voice,
+                piper_model_path=piper_model_path,
                 stt_model=stt_model,
                 vad_threshold=vad_threshold,
                 opening_line=opening_line,
@@ -597,6 +611,8 @@ def _handle_call_screening(
     purpose: str,
     logger: logging.Logger,
     tts_voice: str = "en-US-GuyNeural",
+    tts_engine: str = "edge",
+    piper_model_path: str = "models/piper/en_US-lessac-medium.onnx",
     tts: object | None = None,
     allow_sapi_fallback: bool = False,
 ) -> bool:
@@ -611,7 +627,9 @@ def _handle_call_screening(
         if own_tts:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                engine=tts_engine,
                 voice=tts_voice,
+                piper_model_path=piper_model_path,
                 use_cache=True,
                 allow_sapi_fallback=allow_sapi_fallback,
             )
@@ -717,7 +735,9 @@ def _run_realtime_loop(
     callback_number: str,
     loopback_device_index: int,
     capture_device: str,
+    tts_engine: str,
     tts_voice: str,
+    piper_model_path: str,
     stt_model: str,
     vad_threshold: float,
     opening_line: str | None,
@@ -776,7 +796,9 @@ def _run_realtime_loop(
         else:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                engine=tts_engine,
                 voice=tts_voice,
+                piper_model_path=piper_model_path,
                 use_cache=tts_warmup,
                 allow_sapi_fallback=tts_allow_sapi_fallback,
             )
@@ -1141,7 +1163,9 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     call_timeout    = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
     capture_device  = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    tts_engine      = cfg.tts_engine
     tts_voice       = args.tts_voice or cfg.tts_voice
+    piper_model_path = cfg.piper_model_path
 
     if not callback_number:
         raise SystemExit(
@@ -1193,7 +1217,9 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             dry_run=False,
             realtime=args.realtime,
             capture_device=capture_device,
+            tts_engine=tts_engine,
             tts_voice=tts_voice,
+            piper_model_path=piper_model_path,
             stt_model=cfg.stt_model,
             vad_threshold=cfg.vad_threshold,
             groq_api_key=cfg.groq_api_key,
@@ -1417,7 +1443,9 @@ def main() -> None:
     call_timeout = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
     capture_device = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    tts_engine = cfg.tts_engine
     tts_voice = args.tts_voice or cfg.tts_voice
+    piper_model_path = cfg.piper_model_path
 
     if not callback_number:
         raise SystemExit(
@@ -1532,7 +1560,9 @@ def main() -> None:
                 dry_run=True,
                 realtime=args.realtime,
                 capture_device=capture_device,
+                tts_engine=tts_engine,
                 tts_voice=tts_voice,
+                piper_model_path=piper_model_path,
                 stt_model=cfg.stt_model,
                 vad_threshold=cfg.vad_threshold,
                 groq_api_key=cfg.groq_api_key,
@@ -1572,7 +1602,9 @@ def main() -> None:
         dry_run=False,
         realtime=args.realtime,
         capture_device=capture_device,
+        tts_engine=tts_engine,
         tts_voice=tts_voice,
+        piper_model_path=piper_model_path,
         stt_model=cfg.stt_model,
         vad_threshold=cfg.vad_threshold,
         groq_api_key=cfg.groq_api_key,
