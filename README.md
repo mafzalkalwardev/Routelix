@@ -2,7 +2,7 @@
 
 # Routelix
 
-![Routelix logo](src/static/routelix-logo.svg)
+<img src="src/static/routelix-logo.svg" alt="Routelix icon" width="180" />
 
 **Always-on sales automation for outbound campaigns, voice conversations, lead qualification, and follow-up.**
 
