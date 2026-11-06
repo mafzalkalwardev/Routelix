@@ -56,6 +56,19 @@ Routelix helps teams run sales campaigns around the clock with natural voice int
 
 ---
 
+## Experimental local Piper TTS
+
+Edge TTS remains the default. To test a local Piper voice without changing the existing call loop, place the Piper `.onnx` model and matching `.onnx.json` file under `models/piper/`, then set:
+
+```env
+TTS_ENGINE=piper
+PIPER_MODEL_PATH=models/piper/en_US-lessac-medium.onnx
+```
+
+Piper is currently isolated to live TTS synthesis. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
+
+---
+
 ## Why This Exists
 
 Most outbound AI voice demos assume a telephony API. This project is different: it works around the practical reality of Google Voice running in a browser. That means the hard parts are not only AI responses. The hard parts are state detection, browser DOM drift, audio routing, ringing safety, voicemail timing, and long-running operational reliability.

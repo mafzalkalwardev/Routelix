@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tempfile
 import threading
+import wave
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -47,13 +49,27 @@ class RealtimeTTS:
         device_index: int,
         voice: str = VOICE_GUY,
         use_edge_tts: bool = True,
+        engine: str | None = None,
+        piper_model_path: str | Path | None = None,
         use_cache: bool = True,
         allow_sapi_fallback: bool = False,
         audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
     ):
         self.device_index = device_index
         self.voice = voice
-        self._use_edge = use_edge_tts and _edge_available()
+        requested_engine = (engine or os.getenv("TTS_ENGINE", "edge")).strip().lower()
+        if requested_engine in {"piper", "piper-tts"}:
+            self._engine = "piper"
+            self._piper_voice = _load_piper_voice(piper_model_path)
+        elif requested_engine in {"edge", "edge-tts"}:
+            self._engine = "edge-tts" if use_edge_tts and _edge_available() else "sapi"
+            self._piper_voice = None
+        else:
+            raise ValueError(
+                f"Unsupported TTS_ENGINE '{requested_engine}'. "
+                "Use 'edge' or 'piper'."
+            )
+        self._use_edge = self._engine == "edge-tts"
         self._allow_sapi_fallback = allow_sapi_fallback
         self._lock = threading.Lock()
         self._speaking = threading.Event()
@@ -66,12 +82,11 @@ class RealtimeTTS:
             self._cache = TTSCache(tts_voice=voice)
             self._cache.warm()
 
-        engine = "edge-tts" if self._use_edge else "pyttsx3"
         from src.voice_playback import describe_audio_device
 
         logger.info(
             "RealtimeTTS: engine=%s voice=%s cache=%s sapi_fallback=%s device=%s",
-            engine,
+            self._engine,
             voice,
             "enabled" if self._cache else "disabled",
             self._allow_sapi_fallback,
@@ -155,6 +170,19 @@ class RealtimeTTS:
     # ------------------------------------------------------------------ #
 
     def _play(self, text: str) -> None:
+        if self._engine == "piper":
+            logger.info("RealtimeTTS: generating speech with Piper (%d chars)", len(text))
+            data, rate = _piper_synthesize(text, self._piper_voice)
+            duration = len(data) / float(rate) if rate else 0.0
+            logger.info(
+                "RealtimeTTS: audio generated (engine=piper, rate=%d, duration=%.2fs)",
+                rate,
+                duration,
+            )
+            self._notify_audio_observer(data, rate)
+            _play_numpy_to_device(data, rate, self.device_index)
+            return
+
         # Try cache first — zero network latency for pre-warmed phrases
         if self._cache is not None:
             cached_bytes = self._cache.get(text)
@@ -247,6 +275,55 @@ def _edge_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _load_piper_voice(model_path: str | Path | None):
+    """Load one Piper voice model once for the lifetime of a TTS instance."""
+    try:
+        from piper import PiperVoice
+    except ImportError as exc:
+        raise RuntimeError(
+            "Piper TTS is selected but piper-tts is not installed. "
+            "Install the project dependencies before using TTS_ENGINE=piper."
+        ) from exc
+
+    raw_path = model_path or os.getenv(
+        "PIPER_MODEL_PATH",
+        "models/piper/en_US-lessac-medium.onnx",
+    )
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        from src.paths import runtime_base
+
+        path = runtime_base() / path
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Piper voice model was not found: {path}. "
+            "Set PIPER_MODEL_PATH to a local .onnx voice model."
+        )
+    try:
+        return PiperVoice.load(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"Could not load Piper voice model '{path}': {exc}") from exc
+
+
+def _piper_synthesize(text: str, voice) -> tuple[np.ndarray, int]:
+    """Synthesize Piper PCM through its WAV API and return float32 mono audio."""
+    if voice is None:
+        raise RuntimeError("Piper TTS was selected without a loaded voice model")
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        wav_path = Path(tf.name)
+    try:
+        with wave.open(str(wav_path), "wb") as wav_file:
+            voice.synthesize_wav(text, wav_file)
+        import soundfile as sf
+
+        data, rate = sf.read(str(wav_path), dtype="float32")
+        return np.asarray(data, dtype=np.float32), int(rate)
+    finally:
+        wav_path.unlink(missing_ok=True)
 
 
 def _edge_synthesize(text: str, voice: str) -> tuple[np.ndarray, int]:
