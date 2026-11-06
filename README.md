@@ -33,6 +33,14 @@ Routelix helps teams run sales campaigns around the clock with natural voice int
 
 ---
 
+## Workflow
+
+<p align="center">
+  <img src="docs/routelix-workflow.svg" alt="Routelix sales automation workflow" width="980" />
+</p>
+
+---
+
 ## Core Capabilities
 
 - Browser-based calling automation using Selenium and persistent profiles.
