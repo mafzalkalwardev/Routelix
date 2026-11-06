@@ -27,20 +27,6 @@ Routelix helps teams run sales campaigns around the clock with natural voice int
 
 </div>
 
----
-
-## Contribution Snake
-
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake.svg">
-    <img alt="Contribution snake" src="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake.svg">
-  </picture>
-</div>
-
----
-
 ## SEO Keywords
 
 `sales automation` `outbound sales automation` `AI calling platform` `voice AI sales agent` `lead qualification automation` `AI follow-up software`
