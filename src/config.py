@@ -33,6 +33,9 @@ _DEFAULTS = {
     "tts_engine": "edge",
     "tts_voice": "en-US-GuyNeural",
     "piper_model_path": "models/piper/en_US-lessac-medium.onnx",
+    "piper_length_scale": 1.0,
+    "piper_noise_scale": 0.667,
+    "piper_noise_w_scale": 0.8,
     "tts_allow_sapi_fallback": False,
     "stt_model": "whisper-large-v3-turbo",
     "vad_threshold": 0.015,
@@ -125,6 +128,15 @@ class Config:
         )
         self.piper_model_path: str = os.getenv(
             "PIPER_MODEL_PATH", j.get("piper_model_path", _DEFAULTS["piper_model_path"])
+        )
+        self.piper_length_scale: float = float(
+            os.getenv("PIPER_LENGTH_SCALE", j.get("piper_length_scale", _DEFAULTS["piper_length_scale"]))
+        )
+        self.piper_noise_scale: float = float(
+            os.getenv("PIPER_NOISE_SCALE", j.get("piper_noise_scale", _DEFAULTS["piper_noise_scale"]))
+        )
+        self.piper_noise_w_scale: float = float(
+            os.getenv("PIPER_NOISE_W_SCALE", j.get("piper_noise_w_scale", _DEFAULTS["piper_noise_w_scale"]))
         )
         self.tts_allow_sapi_fallback: bool = os.getenv(
             "TTS_ALLOW_SAPI_FALLBACK",

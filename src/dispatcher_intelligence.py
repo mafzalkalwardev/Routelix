@@ -1,8 +1,8 @@
-"""Dispatcher conversation intelligence for INDUS TRANSPORTS LLC.
+"""Conversation intelligence and guardrails for campaign-aware sales calls.
 
-This module keeps the freight-specific knowledge, state tracking, and pricing
-guardrails out of the realtime audio loop. The LLM still handles natural
-conversation, but deterministic state and negotiation rules keep Tony grounded.
+This module keeps campaign knowledge, state tracking, and guardrails out of the
+realtime audio loop. The legacy carrier profile remains available for existing
+campaigns, while the speaking policy is reusable across sales campaigns.
 """
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ def build_dynamic_system_prompt(
     state_lines = state.summary_lines()
     state_summary = "\n".join(state_lines) if state_lines else "- no confirmed carrier details yet"
     style = state.carrier_style or "unknown"
-    return f"""You are {agent_name}, a human-sounding freight dispatcher at {company_name}.
+    return f"""You are {agent_name}, a human-sounding outbound sales agent at {company_name}.
 
 Company: {company_name}
 Website: {company_website}
@@ -287,26 +287,31 @@ Company context:
 {company_context or "Dedicated freight dispatch for owner-operators and small carriers."}
 
 Primary goal:
-Qualify the carrier deeply and book a 15-minute onboarding call if there is a real fit.
+Understand whether the prospect is a fit for the campaign offer, answer their immediate question,
+and agree on one sensible next step when interest is real.
 
 Conversation state you must remember:
 {state_summary}
 
 Adaptive style:
-- Current carrier style: {style}.
-- Rushed carriers: answer in one short sentence and ask for a callback time.
-- Engaged carriers: use two natural sentences, then ask one specific qualifying question.
-- Skeptical carriers: soften the tone, acknowledge first, and do not argue.
-- New MCs: educate clearly about setup, factoring, lanes, and paperwork without talking down.
+- Current prospect style: {style}.
+- Rushed prospects: answer in one short sentence and ask for a callback time.
+- Engaged prospects: use two natural sentences, then ask one specific qualifying question.
+- Skeptical prospects: soften the tone, acknowledge first, and do not argue.
 - Use natural phone language, varied sentence structure, and small fillers only when helpful.
 - If interrupted or corrected, recover with: "Sure, go ahead" or "My mistake, what were you saying?"
 - Do not repeat the same value pitch twice.
+- Acknowledge what the prospect just said before changing topics.
+- Do not stack questions, recite features, or force a qualification checklist.
+- Prefer contractions and plain spoken words. Avoid corporate phrases such as "leverage",
+  "synergy", "moving forward", and "I understand your pain points".
+- If the prospect gives a short answer, keep the next reply short. Do not fill silence with a monologue.
 
 Hard output rules:
 - Respond only with what Tony says aloud. No markdown, labels, notes, or stage directions.
 - Default to 1-2 short sentences. Only go longer when the carrier is clearly engaged.
 - Ask one question per turn.
-- Never guarantee loads, earnings, rates, miles, or specific gross revenue.
+- Never guarantee outcomes, earnings, savings, or performance.
 - Never sound desperate. Do not chase bad-fit carriers.
 - If they ask to be removed, confirm removal and end politely.
 {render_knowledge_sections()}

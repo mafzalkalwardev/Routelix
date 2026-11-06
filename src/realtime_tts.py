@@ -51,6 +51,9 @@ class RealtimeTTS:
         use_edge_tts: bool = True,
         engine: str | None = None,
         piper_model_path: str | Path | None = None,
+        piper_length_scale: float = 1.0,
+        piper_noise_scale: float = 0.667,
+        piper_noise_w_scale: float = 0.8,
         use_cache: bool = True,
         allow_sapi_fallback: bool = False,
         audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
@@ -61,9 +64,15 @@ class RealtimeTTS:
         if requested_engine in {"piper", "piper-tts"}:
             self._engine = "piper"
             self._piper_voice = _load_piper_voice(piper_model_path)
+            self._piper_length_scale = _bounded_float(piper_length_scale, 0.75, 1.35, "piper_length_scale")
+            self._piper_noise_scale = _bounded_float(piper_noise_scale, 0.0, 1.5, "piper_noise_scale")
+            self._piper_noise_w_scale = _bounded_float(piper_noise_w_scale, 0.0, 1.5, "piper_noise_w_scale")
         elif requested_engine in {"edge", "edge-tts"}:
             self._engine = "edge-tts" if use_edge_tts and _edge_available() else "sapi"
             self._piper_voice = None
+            self._piper_length_scale = 1.0
+            self._piper_noise_scale = 0.667
+            self._piper_noise_w_scale = 0.8
         else:
             raise ValueError(
                 f"Unsupported TTS_ENGINE '{requested_engine}'. "
@@ -172,7 +181,13 @@ class RealtimeTTS:
     def _play(self, text: str) -> None:
         if self._engine == "piper":
             logger.info("RealtimeTTS: generating speech with Piper (%d chars)", len(text))
-            data, rate = _piper_synthesize(text, self._piper_voice)
+            data, rate = _piper_synthesize(
+                _prepare_piper_text(text),
+                self._piper_voice,
+                length_scale=self._piper_length_scale,
+                noise_scale=self._piper_noise_scale,
+                noise_w_scale=self._piper_noise_w_scale,
+            )
             duration = len(data) / float(rate) if rate else 0.0
             logger.info(
                 "RealtimeTTS: audio generated (engine=piper, rate=%d, duration=%.2fs)",
@@ -308,16 +323,70 @@ def _load_piper_voice(model_path: str | Path | None):
         raise RuntimeError(f"Could not load Piper voice model '{path}': {exc}") from exc
 
 
-def _piper_synthesize(text: str, voice) -> tuple[np.ndarray, int]:
+def _bounded_float(value: float, minimum: float, maximum: float, name: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not minimum <= numeric <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return numeric
+
+
+def _prepare_piper_text(text: str) -> str:
+    """Make generated dialogue easier for Piper to deliver naturally."""
+    import re
+
+    text = _clean_tts_text(text)
+    text = text.replace("—", ", ").replace("–", ", ")
+    text = text.replace("...", ", ")
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = re.sub(r",\s*,+", ", ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_tts_text(text: str) -> str:
+    import re
+
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^(?:assistant|agent|tony|routelix)\s*:\s*", "", cleaned, flags=re.I)
+    cleaned = cleaned.replace("**", "").replace("__", "").replace("*", "")
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _piper_synthesize(
+    text: str,
+    voice,
+    *,
+    length_scale: float = 1.0,
+    noise_scale: float = 0.667,
+    noise_w_scale: float = 0.8,
+) -> tuple[np.ndarray, int]:
     """Synthesize Piper PCM through its WAV API and return float32 mono audio."""
     if voice is None:
         raise RuntimeError("Piper TTS was selected without a loaded voice model")
+
+    from piper.config import SynthesisConfig
+    import inspect
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
         wav_path = Path(tf.name)
     try:
         with wave.open(str(wav_path), "wb") as wav_file:
-            voice.synthesize_wav(text, wav_file)
+            if "syn_config" in inspect.signature(voice.synthesize_wav).parameters:
+                voice.synthesize_wav(
+                    text,
+                    wav_file,
+                    syn_config=SynthesisConfig(
+                        length_scale=length_scale,
+                        noise_scale=noise_scale,
+                        noise_w_scale=noise_w_scale,
+                    ),
+                )
+            else:
+                voice.synthesize_wav(text, wav_file)
         import soundfile as sf
 
         data, rate = sf.read(str(wav_path), dtype="float32")
@@ -460,7 +529,10 @@ def save_tts_wav(
     if not text.strip():
         raise ValueError("Cannot synthesize empty text")
     if engine.strip().lower() == "piper":
-        data, rate = _piper_synthesize(text, _load_piper_voice(piper_model_path))
+        data, rate = _piper_synthesize(
+            _prepare_piper_text(text),
+            _load_piper_voice(piper_model_path),
+        )
         sf.write(str(output_path), data, rate)
         logger.info("Piper WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)
         return output_path

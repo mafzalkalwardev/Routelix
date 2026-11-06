@@ -144,6 +144,19 @@
         <div class="field-hint">Relative to the Routelix runtime folder or an absolute Windows path.</div>
       </div>
       <div class="form-group">
+        <label>Piper Pace</label>
+        <input type="number" name="piper_length_scale" value="{{ cfg.piper_length_scale or 1.0 }}" step="0.01" min="0.75" max="1.35" />
+        <div class="field-hint">Lower is faster; 0.95–1.05 usually sounds most natural.</div>
+      </div>
+      <div class="form-group">
+        <label>Piper Voice Variation</label>
+        <input type="number" name="piper_noise_scale" value="{{ cfg.piper_noise_scale or 0.667 }}" step="0.01" min="0" max="1.5" />
+      </div>
+      <div class="form-group">
+        <label>Piper Pronunciation Variation</label>
+        <input type="number" name="piper_noise_w_scale" value="{{ cfg.piper_noise_w_scale or 0.8 }}" step="0.01" min="0" max="1.5" />
+      </div>
+      <div class="form-group">
         <label class="check-row">
           <input type="checkbox" name="tts_allow_sapi_fallback" {% if cfg.tts_allow_sapi_fallback %}checked{% endif %} />
           Allow SAPI fallback if Edge TTS fails

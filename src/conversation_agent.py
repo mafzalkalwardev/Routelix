@@ -1,5 +1,5 @@
 """
-Realtime conversational sales agent — Tony from Indus Transports LLC.
+Realtime conversational sales agent with campaign-aware speaking behavior.
 
 Manages a multi-turn conversation history and generates short, natural responses
 optimised for live phone calls (1–2 sentences, under 25 words per turn).
@@ -148,20 +148,17 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
 
     def opening_line(self) -> str:
-        """Generate Tony's first spoken greeting — warm and human, not a pitch."""
+        """Generate a short, varied greeting that sounds like a real caller."""
         # Varied openers to avoid sounding scripted on repeated calls
         prompt = (
-            f"Write ONE warm, natural phone greeting for an outbound freight dispatch call. "
+            f"Write ONE warm, natural phone greeting for an outbound sales call. "
             f"You are {self.agent_name} from {self.company_name}. "
             "Style: casual, conversational, friendly — like a real person calling, not a robot. "
+            f"Campaign context: {self.company_context}. "
             "The greeting must: (1) say hello warmly, (2) state your name and company briefly, "
             "(3) add a casual human touch like 'how are things going?' or 'hope your day's going well'. "
             "Vary the wording each time — do NOT always use the same sentence structure. "
-            "Examples of good variety: "
-            "'Hey, how are you doing? This is Tony calling from Indus Transports.' "
-            "'Hi there — Tony here at Indus Transports, how\'s it going?' "
-            "'Hello, this is Tony with Indus Transports — hope I\'m catching you at a good time.' "
-            "'Hey, good to connect — Tony from Indus Transports here, how are you today?' "
+            "Do not make a claim about the offer before the prospect responds. "
             "Under 18 words. Return ONLY the greeting text, no quotes, no labels."
         )
         line = self._raw_complete(prompt, max_tokens=55)

@@ -27,3 +27,14 @@ def test_piper_wav_is_decoded_to_float32(monkeypatch, tmp_path):
     assert data.dtype == np.float32
     assert data.shape == (2205,)
     assert rate == 22050
+
+
+def test_piper_text_removes_labels_and_normalizes_pauses():
+    text = realtime_tts._prepare_piper_text("Assistant: Hi... there — thanks **so much**.")
+
+    assert text == "Hi, there, thanks so much."
+
+
+def test_piper_prosody_bounds_reject_extreme_values():
+    with pytest.raises(ValueError, match="piper_length_scale"):
+        realtime_tts._bounded_float(2.0, 0.75, 1.35, "piper_length_scale")

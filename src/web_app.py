@@ -82,6 +82,7 @@ _CONFIG_KEYS = [
     "company_name", "company_website", "company_context",
     "groq_model", "loopback_device", "call_timeout", "call_max_duration",
     "capture_device", "tts_engine", "tts_voice", "piper_model_path",
+    "piper_length_scale", "piper_noise_scale", "piper_noise_w_scale",
     "tts_allow_sapi_fallback", "stt_model", "vad_threshold",
     "answered_speak_delay_seconds", "wait_for_human_audio",
     "human_audio_timeout_seconds", "answer_confirm_polls",
@@ -130,6 +131,9 @@ def _load_config() -> dict:
             "tts_engine": cfg.tts_engine,
             "tts_voice": cfg.tts_voice,
             "piper_model_path": cfg.piper_model_path,
+            "piper_length_scale": cfg.piper_length_scale,
+            "piper_noise_scale": cfg.piper_noise_scale,
+            "piper_noise_w_scale": cfg.piper_noise_w_scale,
             "tts_allow_sapi_fallback": cfg.tts_allow_sapi_fallback,
             "stt_model": cfg.stt_model,
             "vad_threshold": cfg.vad_threshold,
@@ -726,7 +730,8 @@ async def api_save_settings(request: Request):
         "vad_threshold", "answered_speak_delay_seconds",
         "human_audio_timeout_seconds", "min_ring_seconds",
         "max_ring_seconds", "voicemail_detect_seconds",
-        "call_cooldown_seconds",
+        "call_cooldown_seconds", "piper_length_scale",
+        "piper_noise_scale", "piper_noise_w_scale",
     ):
         if f in allowed:
             try:

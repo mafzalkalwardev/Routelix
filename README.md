@@ -63,9 +63,12 @@ Edge TTS remains the default. To test a local Piper voice without changing the e
 ```env
 TTS_ENGINE=piper
 PIPER_MODEL_PATH=models/piper/en_US-lessac-medium.onnx
+PIPER_LENGTH_SCALE=1.0
+PIPER_NOISE_SCALE=0.667
+PIPER_NOISE_W_SCALE=0.8
 ```
 
-Piper is wired through realtime replies, screening audio, and pre-generated voicemail assets. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
+Piper is wired through realtime replies, screening audio, and pre-generated voicemail assets. `PIPER_LENGTH_SCALE` controls speaking pace; the two noise settings control voice and pronunciation variation. Keep them near the defaults until a real voice model has been benchmarked. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
 
 ---
 
