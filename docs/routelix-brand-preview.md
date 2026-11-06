@@ -1,9 +1,7 @@
-# Routelix brand preview
+# Routelix icon preview
 
 ![Routelix logo](../src/static/routelix-logo.svg)
 
 ![Routelix mark](../src/static/routelix-mark.svg)
 
-**Positioning:** Always-on sales automation for outbound campaigns, voice conversations, lead qualification, and follow-up.
-
-**Primary tagline:** Routelix keeps every campaign moving.
+The icon is designed to work independently of the Routelix wordmark across favicons, app icons, avatars, and campaign materials.
