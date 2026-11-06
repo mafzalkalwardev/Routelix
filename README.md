@@ -1,14 +1,20 @@
 <div align="center">
 
-# Google Voice Dispatch Agent
+# Routelix
+
+![Routelix logo](src/static/routelix-logo.svg)
+
+**Always-on sales automation for outbound campaigns, voice conversations, lead qualification, and follow-up.**
+
+Routelix helps teams run sales campaigns around the clock with natural voice interactions, speech intelligence, voicemail handling, lead capture, CRM records, recordings, and measurable follow-up workflows.
 
 <img src="https://readme-typing-svg.demolab.com?font=Inter&weight=700&size=28&duration=2800&pause=700&color=0EA5E9&center=true&vCenter=true&width=900&lines=Live+AI+Google+Voice+Calling+Console;Realtime+STT+%2B+LLM+%2B+TTS+Outbound+Agent;Windows+Desktop+App+%2B+FastAPI+Operator+Console;Built+for+careful+24%2F7+calling+workflows" alt="Typing SVG" />
 
 <p>
   <img src="https://komarev.com/ghpvc/?username=mafzalkalwardev&label=Project%20Views&color=0ea5e9&style=for-the-badge" alt="Project views" />
-  <img src="https://img.shields.io/github/stars/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=22c55e" alt="GitHub stars" />
-  <img src="https://img.shields.io/github/forks/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=f59e0b" alt="GitHub forks" />
-  <img src="https://img.shields.io/github/license/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=64748b" alt="License" />
+  <img src="https://img.shields.io/github/stars/mafzalkalwardev/Routelix?style=for-the-badge&color=22c55e" alt="GitHub stars" />
+  <img src="https://img.shields.io/github/forks/mafzalkalwardev/Routelix?style=for-the-badge&color=f59e0b" alt="GitHub forks" />
+  <img src="https://img.shields.io/github/license/mafzalkalwardev/Routelix?style=for-the-badge&color=64748b" alt="GitHub license" />
 </p>
 
 <p>
@@ -16,36 +22,9 @@
 </p>
 
 <p>
-  <strong>AI outbound calling automation, Google Voice browser control, realtime speech, CRM logging, and Windows app packaging.</strong>
+  <strong>AI sales automation, realtime speech, campaign execution, CRM logging, and Windows app packaging.</strong>
 </p>
 
-</div>
-
----
-
-## Project Showcase
-
-Google Voice Dispatch Agent is a Windows-first live calling system that turns Google Voice into an AI-assisted outbound call console. It controls Google Voice in Chrome, dials contacts, waits for real answer evidence, speaks through a virtual audio cable, listens to call audio, transcribes speech, generates replies with Groq, and writes outcomes back to logs and CRM files.
-
-It can run as a console app, a FastAPI operator console, or a packaged Windows EXE with Desktop and Startup shortcuts.
-
-> Compliance note: this project can place real calls. You are responsible for consent, caller-ID rules, Do Not Call compliance, recording disclosure, spam prevention, local law, Google Voice terms, and carrier/account limits.
-
----
-
-## Stats Cards
-
-<div align="center">
-  <img height="165" src="https://github-readme-stats-sigma-five.vercel.app/api?username=mafzalkalwardev&show_icons=true&theme=tokyonight&hide_border=true&rank_icon=github" alt="GitHub stats" />
-  <img height="165" src="https://github-readme-stats-sigma-five.vercel.app/api/top-langs/?username=mafzalkalwardev&layout=compact&theme=tokyonight&hide_border=true" alt="Top languages" />
-</div>
-
----
-
-## Activity Graph
-
-<div align="center">
-  <img src="https://github-readme-activity-graph.vercel.app/graph?username=mafzalkalwardev&theme=react-dark&hide_border=true&area=true" alt="GitHub activity graph" />
 </div>
 
 ---
@@ -54,9 +33,9 @@ It can run as a console app, a FastAPI operator console, or a packaged Windows E
 
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake.svg">
-    <img alt="Contribution snake" src="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake.svg">
+    <img alt="Contribution snake" src="https://raw.githubusercontent.com/mafzalkalwardev/Routelix/output/github-contribution-grid-snake.svg">
   </picture>
 </div>
 
@@ -64,19 +43,19 @@ It can run as a console app, a FastAPI operator console, or a packaged Windows E
 
 ## SEO Keywords
 
-`AI calling agent` `Google Voice automation` `outbound call automation` `realtime voice AI` `FastAPI call console` `Selenium Google Voice bot` `Groq voice assistant` `Python call center automation` `Windows desktop AI app` `VB-CABLE voice routing` `AI dispatcher assistant` `CRM call logging` `voicemail detection` `speech to text calling agent` `text to speech phone agent`
+`sales automation` `outbound sales automation` `AI calling platform` `voice AI sales agent` `lead qualification automation` `AI follow-up software`
 
 ---
 
 ## Core Capabilities
 
-- Browser automation for Google Voice using Selenium and persistent Chrome profiles.
+- Browser-based calling automation using Selenium and persistent profiles.
 - Live call-state detection with conservative ringing, connected, ended, failed, and voicemail transitions.
 - Realtime speech capture with VAD, STT, LLM response generation, and TTS playback.
 - Voicemail detection through DOM cues plus early-call audio classifier diagnostics.
 - Pre-generated opening line and voicemail audio assets before dialing.
 - Call logs, transcripts, recordings, connected-call archive, failed-call archive, and CRM enrichment.
-- FastAPI web console for settings, preflight, audio tools, live runs, logs, recordings, leads, and carrier CRM.
+- FastAPI web console for settings, preflight, audio tools, live runs, logs, recordings, leads, and CRM.
 - Windows EXE build with PyInstaller.
 - Desktop shortcut and Windows Startup shortcut installer.
 - Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, and realtime loop behavior.

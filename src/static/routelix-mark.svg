@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title">
+  <title id="title">Routelix mark</title>
+  <defs>
+    <linearGradient id="route" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0891B2"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="36" fill="#0C2340"/>
+  <path d="M42 119V43c0-6 5-11 11-11h31c18 0 32 14 32 32s-14 32-32 32H42"
+        fill="none" stroke="url(#route)" stroke-width="13" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="M79 96l34 29" fill="none" stroke="url(#route)" stroke-width="13"
+        stroke-linecap="round"/>
+  <path d="M104 115l12 10-15 2" fill="none" stroke="#25D366" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="42" cy="119" r="8" fill="#25D366"/>
+</svg>

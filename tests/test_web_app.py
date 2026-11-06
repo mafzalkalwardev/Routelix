@@ -31,7 +31,7 @@ def client(tmp_path_factory):
 def test_dashboard_loads(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "INDUS TRANSPORTS" in r.text
+    assert "ROUTELIX" in r.text
     assert "/static/indus-logo.jpg" in r.text
 
 
@@ -116,7 +116,7 @@ def test_branding_in_all_pages(client):
     for url in pages:
         with patch("src.voice_playback.list_audio_devices", return_value=[]):
             r = client.get(url)
-        assert "INDUS TRANSPORTS" in r.text, f"Branding missing on {url}"
+        assert "ROUTELIX" in r.text, f"Branding missing on {url}"
         assert "Muhammad Afzal" in r.text, f"Developer credit missing on {url}"
         assert "+923079670503" in r.text, f"WhatsApp missing on {url}"
 

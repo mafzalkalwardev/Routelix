@@ -3,14 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}INDUS TRANSPORTS LLC — Dispatch Agent Console{% endblock %}</title>
+  <title>{% block title %}Routelix — Always-On Sales Automation{% endblock %}</title>
+  <meta name="description" content="Routelix automates outbound sales campaigns with natural voice conversations, speech intelligence, lead capture, voicemail handling, and follow-up workflows." />
+  <meta name="keywords" content="sales automation, outbound sales automation, AI calling platform, voice AI sales agent, automated sales campaigns, lead qualification automation" />
+  <meta name="application-name" content="Routelix" />
+  <link rel="manifest" href="/static/site.webmanifest" />
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="stylesheet" href="/static/dark-light.css" />
-  <link rel="icon" href="/static/indus-logo.jpg" />
+  <link rel="icon" href="/static/routelix-mark.svg" type="image/svg+xml" />
 
   <script>
     (function () {
-      const storageKey = 'indus_theme';
+      const storageKey = 'routelix_theme';
       function applyTheme(theme) {
         const html = document.documentElement;
         if (theme === 'dark') html.setAttribute('data-theme', 'dark');
@@ -33,10 +37,10 @@
 <!-- ===== SIDEBAR ===== -->
 <nav class="sidebar" id="sidebar">
   <div class="sidebar-brand">
-    <img class="brand-logo" src="/static/indus-logo.jpg" alt="INDUS TRANSPORTS LLC logo" />
+    <img class="brand-logo" src="/static/routelix-mark.svg" alt="Routelix logo" />
     <div class="brand-text">
-      <span class="brand-name">INDUS TRANSPORTS</span>
-      <span class="brand-sub">LLC</span>
+      <span class="brand-name">ROUTELIX</span>
+      <span class="brand-sub">SALES AUTOMATION</span>
     </div>
   </div>
 
@@ -162,7 +166,7 @@
   <div class="sidebar-footer">
     <div class="sidebar-footer-text">
       Dev: <a href="https://wa.me/923079670503" target="_blank">Muhammad Afzal</a><br>
-      INDUS TRANSPORTS LLC &mdash; v1.0
+      ROUTELIX &mdash; v1.0
     </div>
   </div>
 </nav>
@@ -171,8 +175,8 @@
 <div class="layout">
   <header class="topbar">
     <div class="topbar-left">
-      <h1 class="topbar-title">INDUS TRANSPORTS LLC</h1>
-      <span class="topbar-sub">Dispatch Agent Console</span>
+      <h1 class="topbar-title">ROUTELIX</h1>
+      <span class="topbar-sub">Always-On Sales Automation</span>
     </div>
     <div class="topbar-right">
       <span id="topbarClock"></span>
@@ -194,7 +198,7 @@
   </main>
 
   <footer class="footer">
-    <span>INDUS TRANSPORTS LLC &mdash; Dispatch Agent Console</span>
+    <span>ROUTELIX &mdash; Always-On Sales Automation</span>
     <span class="footer-dev">Developer: <strong>Muhammad Afzal</strong> &nbsp;|&nbsp; WhatsApp: <a href="https://wa.me/923079670503" target="_blank">+923079670503</a></span>
   </footer>
 </div>
@@ -206,4 +210,3 @@
 {% block scripts %}{% endblock %}
 </body>
 </html>
-

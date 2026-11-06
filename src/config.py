@@ -14,15 +14,13 @@ _DEFAULTS = {
     "contacts_file": str(DATA_DIR / "contacts.xlsx"),
     "profile_name": "sales_profile",
     "callback_number": "",
-    "agent_name": "Tony",
-    "company_name": "Indus Transports LLC",
-    "company_website": "https://industransports.online/",
+    "agent_name": "Alex",
+    "company_name": "Routelix",
+    "company_website": "",
     "company_context": (
-        "Indus Transports LLC helps owner-operators and small trucking companies "
-        "find high-paying freight loads nationwide with dedicated dispatchers, "
-        "rate negotiation, paperwork/payment support, all equipment types, "
-        "48-state coverage, and 24/7 support. Website says carriers can average "
-        "$12K+ weekly gross, but do not guarantee earnings."
+        "Routelix helps businesses automate outbound sales campaigns with natural "
+        "voice conversations, lead qualification, appointment setting, voicemail "
+        "handling, CRM updates, and consistent follow-up around the clock."
     ),
     "groq_model": "llama-3.3-70b-versatile",
     "rotation_minutes": 60,

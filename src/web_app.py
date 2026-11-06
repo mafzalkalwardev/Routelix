@@ -1,5 +1,5 @@
 """
-INDUS TRANSPORTS LLC — Dispatch Agent Operator Console
+ROUTELIX — Always-On Sales Automation Console
 FastAPI + Jinja2 web frontend for the Google Voice dispatch agent.
 
 Run with:
@@ -52,7 +52,11 @@ logger = logging.getLogger("GoogleVoiceAgent.WebApp")
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="INDUS TRANSPORTS LLC — Dispatch Agent Console",
+    title="Routelix — Always-On Sales Automation",
+    description=(
+        "Always-on sales automation for outbound campaigns, voice conversations, "
+        "lead qualification, and follow-up workflows."
+    ),
     docs_url=None,
     redoc_url=None,
 )

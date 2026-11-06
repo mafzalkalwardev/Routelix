@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active_page = "settings" %}
 
-{% block title %}Settings — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Settings — Routelix{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -22,10 +22,10 @@
     <div id="accountRows"></div>
     <div class="form-grid" style="margin-top:1rem">
       <input type="hidden" id="gvId" />
-      <div class="form-group"><label>Account Label</label><input id="gvName" type="text" placeholder="Dispatch line 1" /></div>
+      <div class="form-group"><label>Account Label</label><input id="gvName" type="text" placeholder="Campaign line 1" /></div>
       <div class="form-group"><label>Google Email</label><input id="gvEmail" type="email" autocomplete="username" /></div>
       <div class="form-group"><label>Password</label><input id="gvPassword" type="password" autocomplete="current-password" placeholder="Leave blank to keep saved password" /></div>
-      <div class="form-group"><label>Chrome Profile</label><input id="gvProfile" type="text" placeholder="dispatch_line_1" /></div>
+      <div class="form-group"><label>Chrome Profile</label><input id="gvProfile" type="text" placeholder="campaign_line_1" /></div>
       <div class="form-group"><label>Loopback Device</label><input id="gvLoopback" type="text" placeholder="CABLE-A Input" /></div>
       <div class="form-group"><label>Capture Device</label><input id="gvCapture" type="text" placeholder="CABLE-A Output" /></div>
       <div class="form-group"><label class="check-row"><input id="gvEnabled" type="checkbox" checked /> Enabled for calling</label></div>
@@ -47,7 +47,7 @@
       </div>
       <div class="form-group">
         <label>Company Name</label>
-        <input type="text" name="company_name" value="{{ cfg.company_name or 'Indus Transports LLC' }}" />
+        <input type="text" name="company_name" value="{{ cfg.company_name or 'Routelix' }}" />
       </div>
       <div class="form-group">
         <label>Company Website</label>

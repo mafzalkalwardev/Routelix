@@ -1,5 +1,5 @@
 /* ===================================================================
-   INDUS TRANSPORTS LLC — Dispatch Agent Console
+   ROUTELIX — Always-On Sales Automation
    Design system v2 — polished professional SaaS UI
 =================================================================== */
 
@@ -8,15 +8,15 @@
 /* ── Token system ───────────────────────────────────────────────── */
 :root {
   /* Brand */
-  --navy:        #0B1F3A;
-  --navy-light:  #162d50;
-  --blue:        #3b82f6;
-  --blue-dark:   #1d4ed8;
-  --blue-light:  #eff6ff;
-  --gold:        #F5A623;
-  --gold-dark:   #d4891e;
-  --amber:       #F5A623;
-  --amber-dark:  #d4891e;
+  --navy:        #0C2340;
+  --navy-light:  #1A3A5C;
+  --blue:        #0891B2;
+  --blue-dark:   #0E7490;
+  --blue-light:  #ECFEFF;
+  --gold:        #25D366;
+  --gold-dark:   #1DA851;
+  --amber:       #25D366;
+  --amber-dark:  #1DA851;
   --green:       #16A34A;
   --green-dark:  #15803d;
   --red:         #DC2626;
@@ -98,7 +98,7 @@ code, kbd {
   overflow: hidden;
   border-right: 1px solid rgba(255,255,255,.04);
 
-  /* Theme aware background — Indus navy (kept in light + dark) */
+  /* Routelix navy is consistent across themes for a stable control surface. */
   background: linear-gradient(180deg, #060e1a 0%, #0B1F3A 40%, #0d2241 100%);
 }
 
