@@ -125,10 +125,18 @@ class ConversationAgent:
         company_website: str = "",
         callback_number: str = "+15551234567",
         contact_name: str = "",
+        contact_phone: str = "",
+        rate_limit_per_minute: int | None = None,
+        backend: str = "groq",
     ):
-        if not api_key:
-            raise ValueError("api_key is required for ConversationAgent")
-        self._client = Groq(api_key=api_key)
+        self._backend = (backend or "groq").strip().lower()
+        if self._backend == "local":
+            from src.local_llm import LocalChatClient
+            self._client = LocalChatClient()
+        else:
+            if not api_key:
+                raise ValueError("api_key is required for ConversationAgent")
+            self._client = Groq(api_key=api_key)
         self.model = model
         self.agent_name = agent_name
         self.company_name = company_name
@@ -136,12 +144,16 @@ class ConversationAgent:
         self.company_website = company_website or ""
         self.callback_number = callback_number
         self.contact_name = contact_name
+        self.contact_phone = contact_phone
+        self.rate_limit_per_minute = rate_limit_per_minute
         self.state = DispatcherConversationState()
         self._system = self._build_system_prompt()
         self._history: list[dict] = []
         self._turn_count: int = 0
         self._consecutive_negatives: int = 0
         self._engaged: bool = False
+        self._llm_failures: int = 0
+        self._llm_down: bool = False
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -204,6 +216,7 @@ class ConversationAgent:
         max_turns = _MAX_TURNS_ENGAGED if self._engaged else _MAX_TURNS_DEFAULT
         return (
             self.state.interest_level == "DNC"
+            or self._llm_down
             or self._consecutive_negatives >= _CONSECUTIVE_NEGATIVES_THRESHOLD
             or self._turn_count > max_turns
         )
@@ -220,6 +233,8 @@ class ConversationAgent:
         self._turn_count = 0
         self._consecutive_negatives = 0
         self._engaged = False
+        self._llm_failures = 0
+        self._llm_down = False
         self.contact_name = contact_name
         self.state = DispatcherConversationState()
         self._system = self._build_system_prompt()
@@ -296,10 +311,11 @@ class ConversationAgent:
                 # top_p for tighter distribution on short answers
                 top_p=0.92,
             )
+            self._llm_failures = 0
             return _clean_spoken_text(resp.choices[0].message.content)
         except Exception as exc:
             logger.error("LLM completion error: %s", exc)
-            return "Sorry, could you say that again?"
+            return self._fallback_when_model_fails()
 
     def _raw_complete(self, user_prompt: str, max_tokens: int = 80) -> str:
         self._system = self._build_system_prompt()
@@ -317,6 +333,14 @@ class ConversationAgent:
         except Exception as exc:
             logger.error("LLM raw completion error: %s", exc)
             return ""
+
+    def _fallback_when_model_fails(self) -> str:
+        """Ask once, then close. Never repeat the same apology on every turn."""
+        self._llm_failures += 1
+        if self._llm_failures >= 2:
+            self._llm_down = True
+            return "The line is rough on my side. I'll follow up later. Have a safe day."
+        return "I missed that last part. Go ahead."
 
     def _chat_complete_with_backoff(self, **kwargs):
         delays = (1.0, 2.0, 4.0)

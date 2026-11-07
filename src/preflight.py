@@ -173,6 +173,66 @@ def check_capture_device(device_hint: Optional[str] = None) -> CheckResult:
         return CheckResult("Capture Device", "warn", f"Capture device check error: {exc}")
 
 
+def check_piper_voice(model_path: Optional[str] = None) -> CheckResult:
+    """Confirm the local Piper voice is installed when that engine is selected."""
+    engine = os.getenv("TTS_ENGINE", "edge").strip().lower()
+    if engine not in {"piper", "piper-tts"}:
+        return CheckResult("Piper Voice", "ok", f"TTS engine is '{engine or 'edge'}'; Piper model is not required")
+    try:
+        import piper  # noqa: F401
+    except ImportError:
+        return CheckResult(
+            "Piper Voice", "fail",
+            "piper-tts is not installed. Run: pip install -r requirements.txt",
+        )
+    raw = model_path or os.getenv("PIPER_MODEL_PATH", "models/piper/en_US-lessac-medium.onnx")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    config_path = Path(str(path) + ".json")
+    if not path.is_file():
+        return CheckResult("Piper Voice", "fail", f"Model not found: {path}")
+    if not config_path.is_file():
+        return CheckResult("Piper Voice", "fail", f"Voice config not found: {config_path}")
+    return CheckResult("Piper Voice", "ok", f"Piper voice ready: {path.name}")
+
+
+def check_local_models() -> CheckResult:
+    """Confirm on-device answer, hearing, and voice files when those backends are selected."""
+    llm = os.getenv("LLM_BACKEND", "groq").strip().lower()
+    stt = os.getenv("STT_BACKEND", "groq").strip().lower()
+    engine = os.getenv("TTS_ENGINE", "edge").strip().lower()
+    if llm != "local" and stt != "local" and engine != "kokoro":
+        return CheckResult("Local Models", "ok", "Cloud backends selected; local model files are not required")
+    missing: list[str] = []
+    if llm == "local":
+        model = Path(os.getenv("LOCAL_LLM_PATH", "models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf")).expanduser()
+        if not model.is_absolute():
+            model = BASE_DIR / model
+        if not model.is_file():
+            missing.append(str(model))
+    if engine == "kokoro":
+        voice = Path(os.getenv("KOKORO_MODEL_PATH", "models/kokoro/kokoro-v1.0.onnx")).expanduser()
+        voices = Path(os.getenv("KOKORO_VOICES_PATH", "models/kokoro/voices-v1.0.bin")).expanduser()
+        if not voice.is_absolute():
+            voice = BASE_DIR / voice
+        if not voices.is_absolute():
+            voices = BASE_DIR / voices
+        if not voice.is_file():
+            missing.append(str(voice))
+        if not voices.is_file():
+            missing.append(str(voices))
+    if stt == "local":
+        root = Path(os.getenv("STT_MODEL_DIR", "models/stt")).expanduser()
+        if not root.is_absolute():
+            root = BASE_DIR / root
+        if not root.exists() or not any(root.rglob("model.bin")):
+            missing.append(str(root))
+    if missing:
+        return CheckResult("Local Models", "fail", "Missing local model files: " + "; ".join(missing))
+    return CheckResult("Local Models", "ok", "Local answer, speech recognition, and voice models are on disk")
+
+
 def check_callback_number() -> CheckResult:
     number = os.getenv("CALLBACK_NUMBER", os.getenv("GOOGLE_VOICE_NUMBER", ""))
     # also check dialer_config.json
@@ -205,5 +265,7 @@ def run_all(
         check_chrome_profile(profile_name),
         check_audio_loopback(loopback_device),
         check_capture_device(capture_device),
+        check_piper_voice(),
+        check_local_models(),
         check_callback_number(),
     ]

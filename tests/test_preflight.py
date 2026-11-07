@@ -39,6 +39,7 @@ def test_check_env_ok(tmp_path, monkeypatch):
 # ── check_groq_api ───────────────────────────────────────────────────────────
 
 def test_check_groq_no_key(monkeypatch):
+    monkeypatch.delenv("OFFLINE_MODE", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     from src.preflight import check_groq_api
     r = check_groq_api(api_key="")
@@ -46,13 +47,15 @@ def test_check_groq_no_key(monkeypatch):
     assert "not set" in r.message.lower() or "GROQ_API_KEY" in r.message
 
 
-def test_check_groq_placeholder():
+def test_check_groq_placeholder(monkeypatch):
+    monkeypatch.delenv("OFFLINE_MODE", raising=False)
     from src.preflight import check_groq_api
     r = check_groq_api(api_key="your_groq_api_key_here")
     assert r.status == "fail"
 
 
-def test_check_groq_connection_error():
+def test_check_groq_connection_error(monkeypatch):
+    monkeypatch.delenv("OFFLINE_MODE", raising=False)
     from src.preflight import check_groq_api
     with patch("src.preflight.check_groq_api.__wrapped__" if hasattr(check_groq_api, "__wrapped__") else "builtins.open"):
         # Simulate Groq client raising
@@ -63,7 +66,8 @@ def test_check_groq_connection_error():
             assert "Connection" in r.message or "failed" in r.message.lower()
 
 
-def test_check_groq_ok():
+def test_check_groq_ok(monkeypatch):
+    monkeypatch.delenv("OFFLINE_MODE", raising=False)
     from src.preflight import check_groq_api
     mock_models = MagicMock()
     mock_models.data = [MagicMock(), MagicMock(), MagicMock()]
@@ -178,7 +182,29 @@ def test_check_callback_ok(monkeypatch):
 
 # ── run_all ──────────────────────────────────────────────────────────────────
 
-def test_run_all_returns_seven_results(monkeypatch):
+def test_check_piper_voice_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.preflight.BASE_DIR", tmp_path)
+    monkeypatch.setenv("TTS_ENGINE", "piper")
+    monkeypatch.setenv("PIPER_MODEL_PATH", "models/piper/missing.onnx")
+    from src.preflight import check_piper_voice
+    result = check_piper_voice()
+    assert result.status == "fail"
+    assert "not found" in result.message.lower()
+
+
+def test_check_piper_voice_ready(tmp_path, monkeypatch):
+    model = tmp_path / "voice.onnx"
+    config = tmp_path / "voice.onnx.json"
+    model.write_bytes(b"onnx")
+    config.write_bytes(b"{}")
+    monkeypatch.setenv("TTS_ENGINE", "piper")
+    from src.preflight import check_piper_voice
+    result = check_piper_voice(str(model))
+    assert result.status == "ok"
+    assert "voice.onnx" in result.message
+
+
+def test_run_all_returns_nine_results(monkeypatch):
     monkeypatch.setenv("CALLBACK_NUMBER", "+15551234567")
     with patch("src.preflight.check_env") as ce, \
          patch("src.preflight.check_groq_api") as cg, \
@@ -186,10 +212,12 @@ def test_run_all_returns_seven_results(monkeypatch):
          patch("src.preflight.check_chrome_profile") as cp, \
          patch("src.preflight.check_audio_loopback") as ca, \
          patch("src.preflight.check_capture_device") as ccap, \
+         patch("src.preflight.check_piper_voice") as cpiper, \
+         patch("src.preflight.check_local_models") as clocal, \
          patch("src.preflight.check_callback_number") as cn:
         from src.preflight import CheckResult
-        for mock in (ce, cg, cc, cp, ca, ccap, cn):
+        for mock in (ce, cg, cc, cp, ca, ccap, cpiper, clocal, cn):
             mock.return_value = CheckResult("X", "ok", "ok")
         from src.preflight import run_all
         results = run_all()
-        assert len(results) == 7
+        assert len(results) == 9

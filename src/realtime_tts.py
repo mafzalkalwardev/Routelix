@@ -35,6 +35,10 @@ logger = logging.getLogger("GoogleVoiceAgent")
 
 VOICE_GUY       = "en-US-GuyNeural"          # primary — natural male
 VOICE_CHRIS     = "en-US-ChristopherNeural"   # backup male
+_PIPER_FILLERS = ("Got it.", "Sure.", "Absolutely.", "Of course.", "One moment.")
+_PIPER_VOICES: dict[str, object] = {}
+_PIPER_VOICE_LOCK = threading.Lock()
+_PIPER_SYNTH_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ #
@@ -51,15 +55,16 @@ class RealtimeTTS:
         use_edge_tts: bool = True,
         engine: str | None = None,
         piper_model_path: str | Path | None = None,
-        piper_length_scale: float = 1.0,
-        piper_noise_scale: float = 0.667,
-        piper_noise_w_scale: float = 0.8,
+        piper_length_scale: float = 1.07,
+        piper_noise_scale: float = 0.5,
+        piper_noise_w_scale: float = 0.92,
         use_cache: bool = True,
         allow_sapi_fallback: bool = False,
         audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
     ):
         self.device_index = device_index
         self.voice = voice
+        self._piper_phrase_cache: _PiperPhraseCache | None = None
         requested_engine = (engine or os.getenv("TTS_ENGINE", "edge")).strip().lower()
         if requested_engine in {"piper", "piper-tts"}:
             self._engine = "piper"
@@ -67,16 +72,38 @@ class RealtimeTTS:
             self._piper_length_scale = _bounded_float(piper_length_scale, 0.75, 1.35, "piper_length_scale")
             self._piper_noise_scale = _bounded_float(piper_noise_scale, 0.0, 1.5, "piper_noise_scale")
             self._piper_noise_w_scale = _bounded_float(piper_noise_w_scale, 0.0, 1.5, "piper_noise_w_scale")
+            if use_cache:
+                self._piper_phrase_cache = _PiperPhraseCache(
+                    self._piper_voice,
+                    self._piper_length_scale,
+                    self._piper_noise_scale,
+                    self._piper_noise_w_scale,
+                )
+        elif requested_engine == "kokoro":
+            self._engine = "kokoro"
+            self._piper_voice = None
+            self._piper_length_scale = 1.07
+            self._piper_noise_scale = 0.5
+            self._piper_noise_w_scale = 0.92
+            self._kokoro_voice_name = os.getenv("KOKORO_VOICE", "af_heart")
+            try:
+                self._kokoro_speed = float(os.getenv("KOKORO_SPEED", "0.92"))
+            except ValueError:
+                self._kokoro_speed = 0.92
+            self._kokoro = _load_kokoro(
+                os.getenv("KOKORO_MODEL_PATH", "models/kokoro/kokoro-v1.0.onnx"),
+                os.getenv("KOKORO_VOICES_PATH", "models/kokoro/voices-v1.0.bin"),
+            )
         elif requested_engine in {"edge", "edge-tts"}:
             self._engine = "edge-tts" if use_edge_tts and _edge_available() else "sapi"
             self._piper_voice = None
-            self._piper_length_scale = 1.0
-            self._piper_noise_scale = 0.667
-            self._piper_noise_w_scale = 0.8
+            self._piper_length_scale = 1.07
+            self._piper_noise_scale = 0.5
+            self._piper_noise_w_scale = 0.92
         else:
             raise ValueError(
                 f"Unsupported TTS_ENGINE '{requested_engine}'. "
-                "Use 'edge' or 'piper'."
+                "Use 'edge', 'piper', or 'kokoro'."
             )
         self._use_edge = self._engine == "edge-tts"
         self._allow_sapi_fallback = allow_sapi_fallback
@@ -104,6 +131,9 @@ class RealtimeTTS:
 
     def prewarm_line(self, text: str) -> None:
         """Pre-synthesize an exact phrase (e.g. opening) so it matches live reply voice."""
+        if self._piper_phrase_cache is not None and text.strip():
+            self._piper_phrase_cache.ensure(text)
+            return
         if self._cache is not None and text.strip():
             self._cache.ensure(text)
 
@@ -146,7 +176,18 @@ class RealtimeTTS:
         return self._speaking.is_set()
 
     def play_filler(self) -> None:
-        """Play a short cached acknowledgement without interrupting current speech."""
+        """Play a short acknowledgement without interrupting current speech."""
+        if self._piper_phrase_cache is not None:
+            import random
+
+            phrase = random.choice(_PIPER_FILLERS)
+            threading.Thread(
+                target=self.speak,
+                args=(phrase, False),
+                daemon=True,
+                name="TTSFiller",
+            ).start()
+            return
         if self._cache is None:
             return
         phrase = self._cache.random_filler()
@@ -179,15 +220,41 @@ class RealtimeTTS:
     # ------------------------------------------------------------------ #
 
     def _play(self, text: str) -> None:
-        if self._engine == "piper":
-            logger.info("RealtimeTTS: generating speech with Piper (%d chars)", len(text))
-            data, rate = _piper_synthesize(
-                _prepare_piper_text(text),
-                self._piper_voice,
-                length_scale=self._piper_length_scale,
-                noise_scale=self._piper_noise_scale,
-                noise_w_scale=self._piper_noise_w_scale,
+        if self._engine == "kokoro":
+            prepared = _prepare_piper_text(text)
+            if not prepared:
+                logger.info("RealtimeTTS: empty text skipped")
+                return
+            logger.info("RealtimeTTS: generating speech with Kokoro (%d chars)", len(prepared))
+            data, rate = _render_kokoro_phrase(
+                prepared,
+                self._kokoro,
+                self._kokoro_voice_name,
+                self._kokoro_speed,
             )
+            self._notify_audio_observer(data, rate)
+            _play_numpy_to_device(data, rate, self.device_index)
+            return
+        if self._engine == "piper":
+            prepared = _prepare_piper_text(text)
+            if not prepared:
+                logger.info("RealtimeTTS: empty text skipped")
+                return
+            cached = self._piper_phrase_cache.get(prepared) if self._piper_phrase_cache else None
+            if cached is not None:
+                data, rate = cached
+                logger.info("RealtimeTTS: serving Piper phrase from cache (%d chars)", len(prepared))
+            else:
+                logger.info("RealtimeTTS: generating speech with Piper (%d chars)", len(prepared))
+                data, rate = _render_piper_phrase(
+                    prepared,
+                    self._piper_voice,
+                    length_scale=self._piper_length_scale,
+                    noise_scale=self._piper_noise_scale,
+                    noise_w_scale=self._piper_noise_w_scale,
+                )
+                if self._piper_phrase_cache is not None:
+                    self._piper_phrase_cache.store(prepared, data, rate)
             duration = len(data) / float(rate) if rate else 0.0
             logger.info(
                 "RealtimeTTS: audio generated (engine=piper, rate=%d, duration=%.2fs)",
@@ -292,8 +359,69 @@ def _edge_available() -> bool:
         return False
 
 
+class _PiperPhraseCache:
+    """In-memory PCM cache so repeated Piper lines do not resynthesize."""
+
+    def __init__(self, voice, length_scale: float, noise_scale: float, noise_w_scale: float):
+        self._voice = voice
+        self._length_scale = length_scale
+        self._noise_scale = noise_scale
+        self._noise_w_scale = noise_w_scale
+        self._items: dict[str, tuple[np.ndarray, int]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, text: str) -> tuple[np.ndarray, int] | None:
+        key = _prepare_piper_text(text).casefold()
+        if not key:
+            return None
+        with self._lock:
+            item = self._items.get(key)
+        if item is None:
+            return None
+        return item[0].copy(), item[1]
+
+    def store(self, text: str, data: np.ndarray, rate: int) -> None:
+        key = _prepare_piper_text(text).casefold()
+        if not key:
+            return
+        with self._lock:
+            self._items[key] = (np.asarray(data, dtype=np.float32).copy(), int(rate))
+
+    def ensure(self, text: str) -> None:
+        if self.get(text) is not None:
+            return
+        prepared = _prepare_piper_text(text)
+        if not prepared:
+            return
+        data, rate = _render_piper_phrase(
+            prepared,
+            self._voice,
+            length_scale=self._length_scale,
+            noise_scale=self._noise_scale,
+            noise_w_scale=self._noise_w_scale,
+        )
+        self.store(prepared, data, rate)
+
+
+def piper_voice_paths(model_path: str | Path | None, base: Path | None = None) -> tuple[Path, Path]:
+    """Resolve the ONNX voice and the matching .onnx.json config."""
+    raw_path = model_path or os.getenv(
+        "PIPER_MODEL_PATH",
+        "models/piper/en_US-lessac-medium.onnx",
+    )
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        if base is None:
+            from src.paths import runtime_base
+
+            base = runtime_base()
+        path = base / path
+    path = path.resolve()
+    return path, Path(str(path) + ".json")
+
+
 def _load_piper_voice(model_path: str | Path | None):
-    """Load one Piper voice model once for the lifetime of a TTS instance."""
+    """Load one Piper voice model and reuse it for later TTS instances."""
     try:
         from piper import PiperVoice
     except ImportError as exc:
@@ -302,25 +430,29 @@ def _load_piper_voice(model_path: str | Path | None):
             "Install the project dependencies before using TTS_ENGINE=piper."
         ) from exc
 
-    raw_path = model_path or os.getenv(
-        "PIPER_MODEL_PATH",
-        "models/piper/en_US-lessac-medium.onnx",
-    )
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        from src.paths import runtime_base
-
-        path = runtime_base() / path
-    path = path.resolve()
+    path, config_path = piper_voice_paths(model_path)
     if not path.is_file():
         raise FileNotFoundError(
             f"Piper voice model was not found: {path}. "
             "Set PIPER_MODEL_PATH to a local .onnx voice model."
         )
-    try:
-        return PiperVoice.load(str(path))
-    except Exception as exc:
-        raise RuntimeError(f"Could not load Piper voice model '{path}': {exc}") from exc
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Piper voice config was not found: {config_path}. "
+            "Keep the matching .onnx.json file next to the .onnx model."
+        )
+    cache_key = str(path)
+    with _PIPER_VOICE_LOCK:
+        cached = _PIPER_VOICES.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            voice = PiperVoice.load(path, config_path=config_path)
+        except Exception as exc:
+            raise RuntimeError(f"Could not load Piper voice model '{path}': {exc}") from exc
+        _PIPER_VOICES[cache_key] = voice
+        logger.info("Piper voice loaded: %s", path.name)
+        return voice
 
 
 def _bounded_float(value: float, minimum: float, maximum: float, name: str) -> float:
@@ -333,6 +465,24 @@ def _bounded_float(value: float, minimum: float, maximum: float, name: str) -> f
     return numeric
 
 
+_SPOKEN_NUMBERS = {
+    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+    11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
+    16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+    30: "thirty", 40: "forty", 50: "fifty", 60: "sixty",
+}
+
+
+def _speak_small_number(match) -> str:
+    import re
+
+    raw = match.group(0)
+    if not re.fullmatch(r"\d{1,2}", raw):
+        return raw
+    return _SPOKEN_NUMBERS.get(int(raw), raw)
+
+
 def _prepare_piper_text(text: str) -> str:
     """Make generated dialogue easier for Piper to deliver naturally."""
     import re
@@ -340,6 +490,10 @@ def _prepare_piper_text(text: str) -> str:
     text = _clean_tts_text(text)
     text = text.replace("—", ", ").replace("–", ", ")
     text = text.replace("...", ", ")
+    text = re.sub(r"\bLLC\.?", "L.L.C.", text)
+    text = re.sub(r"\bMC\.?", "M.C.", text)
+    text = re.sub(r"\bDOT\.?", "D.O.T.", text)
+    text = re.sub(r"\b\d{1,2}\b", _speak_small_number, text)
     text = re.sub(r"\s*,\s*", ", ", text)
     text = re.sub(r",\s*,+", ", ", text)
     return re.sub(r"\s+", " ", text).strip()
@@ -356,43 +510,155 @@ def _clean_tts_text(text: str) -> str:
     return cleaned
 
 
+def _project_path(path: str | Path) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = Path(__file__).resolve().parent.parent / resolved
+    return resolved
+
+
+_KOKORO = None
+_KOKORO_KEY = ""
+_KOKORO_LOCK = threading.Lock()
+
+
+def _load_kokoro(model_path: str | Path, voices_path: str | Path):
+    """Load the Kokoro ONNX voice once and reuse it."""
+    global _KOKORO, _KOKORO_KEY
+    model = _project_path(model_path)
+    voices = _project_path(voices_path)
+    if not model.is_file() or not voices.is_file():
+        raise FileNotFoundError(
+            "Kokoro voice files are missing. "
+            f"Expected {model} and {voices}."
+        )
+    key = str(model)
+    with _KOKORO_LOCK:
+        if _KOKORO is not None and _KOKORO_KEY == key:
+            return _KOKORO
+        from kokoro_onnx import Kokoro
+
+        _KOKORO = Kokoro(str(model), str(voices))
+        _KOKORO_KEY = key
+        logger.info("Kokoro voice loaded: %s", model.name)
+        return _KOKORO
+
+
+def _render_kokoro_phrase(text: str, kokoro, voice_name: str, speed: float) -> tuple[np.ndarray, int]:
+    """Kokoro already pauses at sentences and clauses. Keep that, then soften the peaks."""
+    return _kokoro_synthesize(text, kokoro, voice_name, speed)
+
+
+def _kokoro_synthesize(text: str, kokoro, voice_name: str, speed: float) -> tuple[np.ndarray, int]:
+    samples, rate = kokoro.create(
+        text,
+        voice=voice_name,
+        speed=speed,
+        lang="en-us",
+        sentence_pause=0.22,
+        clause_pause=0.12,
+    )
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        raise RuntimeError("Kokoro produced no audio")
+    return _soften_piper_audio(audio, int(rate)), int(rate)
+
+
+def _render_piper_phrase(
+    text: str,
+    voice,
+    *,
+    length_scale: float = 1.07,
+    noise_scale: float = 0.5,
+    noise_w_scale: float = 0.92,
+) -> tuple[np.ndarray, int]:
+    """Speak each sentence on its own, with a short breath between them."""
+    import re
+
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
+    if not parts:
+        raise ValueError("Cannot synthesize empty text")
+    chunks: list[np.ndarray] = []
+    rate = 22050
+    for index, part in enumerate(parts):
+        audio, rate = _piper_synthesize(
+            part,
+            voice,
+            length_scale=length_scale,
+            noise_scale=noise_scale,
+            noise_w_scale=noise_w_scale,
+        )
+        if index:
+            chunks.append(np.zeros(int(rate * 0.16), dtype=np.float32))
+        chunks.append(audio)
+    if len(chunks) == 1:
+        return chunks[0], rate
+    return np.concatenate(chunks), rate
+
+
 def _piper_synthesize(
     text: str,
     voice,
     *,
-    length_scale: float = 1.0,
-    noise_scale: float = 0.667,
-    noise_w_scale: float = 0.8,
+    length_scale: float = 1.07,
+    noise_scale: float = 0.5,
+    noise_w_scale: float = 0.92,
 ) -> tuple[np.ndarray, int]:
     """Synthesize Piper PCM through its WAV API and return float32 mono audio."""
     if voice is None:
         raise RuntimeError("Piper TTS was selected without a loaded voice model")
+    if not str(text).strip():
+        raise ValueError("Cannot synthesize empty text")
 
     from piper.config import SynthesisConfig
     import inspect
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        wav_path = Path(tf.name)
-    try:
-        with wave.open(str(wav_path), "wb") as wav_file:
-            if "syn_config" in inspect.signature(voice.synthesize_wav).parameters:
-                voice.synthesize_wav(
-                    text,
-                    wav_file,
-                    syn_config=SynthesisConfig(
-                        length_scale=length_scale,
-                        noise_scale=noise_scale,
-                        noise_w_scale=noise_w_scale,
-                    ),
-                )
-            else:
-                voice.synthesize_wav(text, wav_file)
-        import soundfile as sf
+    with _PIPER_SYNTH_LOCK:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            wav_path = Path(tf.name)
+        try:
+            with wave.open(str(wav_path), "wb") as wav_file:
+                if "syn_config" in inspect.signature(voice.synthesize_wav).parameters:
+                    voice.synthesize_wav(
+                        text,
+                        wav_file,
+                        syn_config=SynthesisConfig(
+                            length_scale=length_scale,
+                            noise_scale=noise_scale,
+                            noise_w_scale=noise_w_scale,
+                            normalize_audio=False,
+                            volume=0.9,
+                        ),
+                    )
+                else:
+                    voice.synthesize_wav(text, wav_file)
+            import soundfile as sf
 
-        data, rate = sf.read(str(wav_path), dtype="float32")
-        return np.asarray(data, dtype=np.float32), int(rate)
-    finally:
-        wav_path.unlink(missing_ok=True)
+            data, rate = sf.read(str(wav_path), dtype="float32")
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+    audio = np.asarray(data, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
+    if audio.size == 0:
+        raise RuntimeError("Piper produced no audio")
+    return _soften_piper_audio(audio, int(rate)), int(rate)
+
+
+def _soften_piper_audio(audio: np.ndarray, rate: int) -> np.ndarray:
+    """Keep peaks off the ceiling and fade the edges so phrases do not click."""
+    audio = np.asarray(audio, dtype=np.float32).copy()
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > 0.82:
+        audio *= 0.82 / peak
+    fade = max(1, int(rate * 0.008))
+    if audio.size > fade * 2:
+        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        audio[:fade] *= ramp
+        audio[-fade:] *= ramp[::-1]
+    return audio
 
 
 def _edge_synthesize(text: str, voice: str) -> tuple[np.ndarray, int]:
@@ -520,6 +786,9 @@ def save_tts_wav(
     engine: str = "edge",
     voice: str = VOICE_GUY,
     piper_model_path: str | Path | None = None,
+    piper_length_scale: float = 1.07,
+    piper_noise_scale: float = 0.5,
+    piper_noise_w_scale: float = 0.92,
 ) -> Path:
     """Write script audio using the selected TTS backend."""
     import soundfile as sf
@@ -528,10 +797,31 @@ def save_tts_wav(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not text.strip():
         raise ValueError("Cannot synthesize empty text")
+    if engine.strip().lower() == "kokoro":
+        kokoro = _load_kokoro(
+            os.getenv("KOKORO_MODEL_PATH", "models/kokoro/kokoro-v1.0.onnx"),
+            os.getenv("KOKORO_VOICES_PATH", "models/kokoro/voices-v1.0.bin"),
+        )
+        try:
+            speed = float(os.getenv("KOKORO_SPEED", "0.92"))
+        except ValueError:
+            speed = 0.92
+        data, rate = _render_kokoro_phrase(
+            _prepare_piper_text(text),
+            kokoro,
+            os.getenv("KOKORO_VOICE", "af_heart"),
+            speed,
+        )
+        sf.write(str(output_path), data, rate)
+        logger.info("Kokoro WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)
+        return output_path
     if engine.strip().lower() == "piper":
-        data, rate = _piper_synthesize(
+        data, rate = _render_piper_phrase(
             _prepare_piper_text(text),
             _load_piper_voice(piper_model_path),
+            length_scale=_bounded_float(piper_length_scale, 0.75, 1.35, "piper_length_scale"),
+            noise_scale=_bounded_float(piper_noise_scale, 0.0, 1.5, "piper_noise_scale"),
+            noise_w_scale=_bounded_float(piper_noise_w_scale, 0.0, 1.5, "piper_noise_w_scale"),
         )
         sf.write(str(output_path), data, rate)
         logger.info("Piper WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)

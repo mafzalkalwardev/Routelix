@@ -36,3 +36,6 @@ audio/voicemails/
 # Piper voice models are large sidecar assets and stay local.
 models/piper/*.onnx
 models/piper/*.onnx.json
+models/llm/
+models/stt/
+models/kokoro/

@@ -1,0 +1,7 @@
+# Routelix
+
+Routelix is a self-hosted AI auto dialer and carrier CRM for outbound Google Voice campaigns.
+
+Public page: https://mafzalkalwardev.github.io/Routelix/
+Source: https://github.com/mafzalkalwardev/Routelix
+Full description for answer engines: https://mafzalkalwardev.github.io/Routelix/llms.txt

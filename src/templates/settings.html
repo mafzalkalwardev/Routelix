@@ -128,10 +128,11 @@
       <div class="form-group">
         <label>TTS Engine</label>
         <select name="tts_engine">
-          <option value="edge" {% if (cfg.tts_engine or 'edge') in ['edge', 'edge-tts'] %}selected{% endif %}>Edge TTS (default)</option>
-          <option value="piper" {% if cfg.tts_engine == 'piper' %}selected{% endif %}>Piper (local ONNX)</option>
+          <option value="kokoro" {% if cfg.tts_engine == 'kokoro' %}selected{% endif %}>Kokoro (local, more natural)</option>
+          <option value="piper" {% if cfg.tts_engine in ['piper', 'piper-tts'] %}selected{% endif %}>Piper (local ONNX voice)</option>
+          <option value="edge" {% if (cfg.tts_engine or 'edge') in ['edge', 'edge-tts'] %}selected{% endif %}>Edge TTS</option>
         </select>
-        <div class="field-hint">Piper requires a local voice model under the configured path.</div>
+        <div class="field-hint">Kokoro uses models/kokoro and sounds closer to a person. Piper uses the medium ONNX voice. Edge needs the internet.</div>
       </div>
       <div class="form-group">
         <label>TTS Voice</label>

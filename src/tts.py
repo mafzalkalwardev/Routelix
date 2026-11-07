@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import pyttsx3
@@ -22,9 +23,27 @@ def _pick_voice(engine: pyttsx3.Engine) -> None:
         engine.setProperty("voice", voices[0].id)
 
 
-def save_text_to_speech(text: str, output_path: str | Path) -> Path:
+def save_text_to_speech(
+    text: str,
+    output_path: str | Path,
+    *,
+    engine: str | None = None,
+) -> Path:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected = (engine if engine is not None else os.getenv("TTS_ENGINE", "edge")).strip().lower()
+    if selected in {"piper", "piper-tts", "kokoro"}:
+        from src.realtime_tts import save_tts_wav
+
+        return save_tts_wav(
+            text,
+            output_path,
+            engine="piper" if selected.startswith("piper") else "kokoro",
+            piper_model_path=os.getenv("PIPER_MODEL_PATH"),
+            piper_length_scale=float(os.getenv("PIPER_LENGTH_SCALE", "1.07")),
+            piper_noise_scale=float(os.getenv("PIPER_NOISE_SCALE", "0.5")),
+            piper_noise_w_scale=float(os.getenv("PIPER_NOISE_W_SCALE", "0.92")),
+        )
 
     try:
         return _save_with_edge_tts(text, output_path)

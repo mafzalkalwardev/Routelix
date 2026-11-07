@@ -26,7 +26,13 @@ def test_tts_cache_ensure_stores_phrase() -> None:
 def test_realtime_tts_prewarm_line_delegates_to_cache() -> None:
     from src.realtime_tts import RealtimeTTS
 
-    tts = RealtimeTTS(device_index=0, use_cache=True, allow_sapi_fallback=False)
+    tts = RealtimeTTS(
+        device_index=0,
+        engine="edge",
+        use_edge_tts=False,
+        use_cache=False,
+        allow_sapi_fallback=False,
+    )
     tts._cache = MagicMock()
     tts.prewarm_line("Hello there.")
     tts._cache.ensure.assert_called_once_with("Hello there.")
@@ -35,7 +41,13 @@ def test_realtime_tts_prewarm_line_delegates_to_cache() -> None:
 def test_realtime_tts_skips_sapi_when_fallback_disabled() -> None:
     from src.realtime_tts import RealtimeTTS
 
-    tts = RealtimeTTS(device_index=0, use_edge_tts=True, use_cache=False, allow_sapi_fallback=False)
+    tts = RealtimeTTS(
+        device_index=0,
+        engine="edge",
+        use_edge_tts=True,
+        use_cache=False,
+        allow_sapi_fallback=False,
+    )
     tts._use_edge = True
     with patch("src.realtime_tts._edge_synthesize", side_effect=RuntimeError("network")):
         with patch("src.realtime_tts._pyttsx3_to_device") as mock_sapi:

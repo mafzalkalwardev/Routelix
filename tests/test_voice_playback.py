@@ -124,7 +124,7 @@ def test_play_wav_to_device_uses_explicit_output_stream(tmp_path):
     assert kwargs["device"] == 6
     assert kwargs["channels"] == 2
     assert kwargs["samplerate"] == 48000
-    stream.write.assert_called_once()
+    assert stream.write.call_count == 2
     mock_sd.play.assert_not_called()
 
 

@@ -1,7 +1,7 @@
 """
 Speech-to-text using Groq Whisper API.
 
-Uses whisper-large-v3-turbo by default: ~2× faster than large-v3 with similar accuracy.
+Uses whisper-large-v3 by default so short phone answers are transcribed more reliably.
 Audio is accepted as a float32 numpy array and converted internally to 16-bit PCM WAV.
 
 Usage:
@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import time
 import wave
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -24,6 +26,16 @@ logger = logging.getLogger("GoogleVoiceAgent")
 
 _MIN_DURATION_S = 0.18    # keep short live-call answers like "yes" and "no"
 _MAX_DURATION_S = 60.0    # Groq Whisper max; truncate longer segments
+_QUIET_SPEECH_FLOOR = 0.03
+_QUIET_SPEECH_TARGET = 0.22
+# Whisper often invents these when the clip is mostly noise.
+_HALLUCINATIONS = frozenset({
+    "thank you",
+    "thanks for watching",
+    "you",
+    "bye",
+    "subtitles by the amara.org community",
+})
 
 # Carrier-specific STT prompt prefix that improves transcription accuracy
 # for freight dispatch vocabulary (truck types, MC numbers, lanes, etc.)
@@ -39,9 +51,10 @@ class GroqWhisperSTT:
     def __init__(
         self,
         api_key: str,
-        model: str = "whisper-large-v3-turbo",
+        model: str = "whisper-large-v3",
         language: str = "en",
         retry_count: int = 2,
+        use_stt_context: bool = True,
     ):
         if not api_key:
             raise ValueError("api_key is required for GroqWhisperSTT")
@@ -49,6 +62,7 @@ class GroqWhisperSTT:
         self.model = model
         self.language = language
         self.retry_count = max(0, retry_count)
+        self.use_stt_context = use_stt_context
         # Tracks the reason for the last empty transcription (for diagnostics)
         self.last_empty_reason: str = ""
 
@@ -94,11 +108,11 @@ class GroqWhisperSTT:
             logger.warning("STT: truncating %.1fs audio to %.0fs", duration, _MAX_DURATION_S)
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
 
-        # Build enriched prompt: prepend freight context before caller-supplied hint.
-        # NOTE: some unit tests expect the raw `prompt` passed by the caller
-        # (without the extra context) to be forwarded to Groq. 
-        enriched_prompt = prompt or ""
-
+        raw_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        audio = _condition_stt_audio(audio)
+        # Caller prompt is forwarded unchanged. Conversation loop already adds
+        # carrier context; an extra prefix here would break that contract.
+        enriched_prompt = (prompt or "").strip()
 
         wav_bytes = _float32_to_wav(audio, samplerate)
 
@@ -111,12 +125,18 @@ class GroqWhisperSTT:
                     model=self.model,
                     language=self.language,
                     response_format="text",
-                    prompt=enriched_prompt,
+                    temperature=0,
                 )
+                if enriched_prompt:
+                    kwargs["prompt"] = enriched_prompt
 
                 result = self._client.audio.transcriptions.create(**kwargs)
                 text = getattr(result, "text", result)
                 transcript = str(text).strip()
+                if _is_low_energy_hallucination(transcript, raw_peak):
+                    self.last_empty_reason = f"ignored low-energy hallucination ({transcript!r})"
+                    logger.info("STT empty: %s", self.last_empty_reason)
+                    return ""
                 if transcript:
                     self.last_empty_reason = ""
                     logger.info("STT result (attempt %d/%d): %s", attempt, attempts, transcript)
@@ -138,9 +158,109 @@ class GroqWhisperSTT:
         return ""
 
 
+class LocalWhisperSTT:
+    """faster-whisper on this machine. The model files stay under models/stt."""
+
+    def __init__(
+        self,
+        model_size: str = "base",
+        model_dir: str | None = None,
+        language: str = "en",
+        retry_count: int = 1,
+        use_stt_context: bool = True,
+    ):
+        self.model = model_size or "base"
+        self.language = language
+        self.retry_count = max(0, retry_count)
+        self.use_stt_context = use_stt_context
+        self.last_empty_reason: str = ""
+        raw = model_dir or os.getenv("STT_MODEL_DIR", "models/stt")
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent.parent / path
+        self.model_dir = path
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            from faster_whisper import WhisperModel
+
+            self.model_dir.mkdir(parents=True, exist_ok=True)
+            self._model = WhisperModel(
+                self.model,
+                device="cpu",
+                compute_type="int8",
+                download_root=str(self.model_dir),
+                local_files_only=True,
+            )
+        return self._model
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        samplerate: int = 16000,
+        prompt: Optional[str] = None,
+    ) -> str:
+        self.last_empty_reason = ""
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        duration = len(audio) / max(samplerate, 1)
+        if duration < _MIN_DURATION_S:
+            self.last_empty_reason = f"audio too short ({duration:.2f}s)"
+            return ""
+        if duration > _MAX_DURATION_S:
+            audio = audio[: int(_MAX_DURATION_S * samplerate)]
+        raw_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        audio = _condition_stt_audio(audio)
+        if samplerate != 16000 and audio.size:
+            target = int(len(audio) * 16000 / samplerate)
+            positions = np.linspace(0, len(audio) - 1, max(target, 1))
+            audio = np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
+        hint = (prompt or "").strip() if self.use_stt_context else ""
+        try:
+            segments, _info = self._load().transcribe(
+                audio,
+                language=self.language,
+                vad_filter=True,
+                beam_size=1,
+                temperature=0.0,
+                initial_prompt=hint or None,
+                condition_on_previous_text=False,
+            )
+            transcript = " ".join(segment.text.strip() for segment in segments).strip()
+        except Exception as exc:
+            self.last_empty_reason = f"local whisper failed: {exc}"
+            logger.error("Local STT failed: %s", exc)
+            return ""
+        if _is_low_energy_hallucination(transcript, raw_peak):
+            self.last_empty_reason = f"ignored low-energy hallucination ({transcript!r})"
+            return ""
+        if not transcript:
+            self.last_empty_reason = "local whisper returned no text"
+        return transcript
+
+
 # ------------------------------------------------------------------ #
 # Helpers
 # ------------------------------------------------------------------ #
+
+def _condition_stt_audio(audio: np.ndarray) -> np.ndarray:
+    """Lift quiet speech into the range Whisper hears, and leave silence alone."""
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return audio
+    audio = audio - float(np.mean(audio))
+    peak = float(np.max(np.abs(audio)))
+    if _QUIET_SPEECH_FLOOR <= peak < _QUIET_SPEECH_TARGET:
+        audio = audio * (_QUIET_SPEECH_TARGET / peak)
+    return np.clip(audio, -1.0, 1.0).astype(np.float32, copy=False)
+
+
+def _is_low_energy_hallucination(transcript: str, peak: float) -> bool:
+    if peak >= _QUIET_SPEECH_FLOOR:
+        return False
+    normalized = " ".join(transcript.casefold().split()).strip(" .!?,")
+    return normalized in _HALLUCINATIONS
+
 
 def _float32_to_wav(audio: np.ndarray, samplerate: int) -> bytes:
     """Convert float32 [-1, 1] numpy array to 16-bit mono PCM WAV bytes."""

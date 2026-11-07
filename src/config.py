@@ -33,11 +33,11 @@ _DEFAULTS = {
     "tts_engine": "edge",
     "tts_voice": "en-US-GuyNeural",
     "piper_model_path": "models/piper/en_US-lessac-medium.onnx",
-    "piper_length_scale": 1.0,
-    "piper_noise_scale": 0.667,
-    "piper_noise_w_scale": 0.8,
+    "piper_length_scale": 1.07,
+    "piper_noise_scale": 0.5,
+    "piper_noise_w_scale": 0.92,
     "tts_allow_sapi_fallback": False,
-    "stt_model": "whisper-large-v3-turbo",
+    "stt_model": "whisper-large-v3",
     "vad_threshold": 0.015,
     # Answer detection — controls when Tony first speaks after CONNECTED is detected
     "answered_speak_delay_seconds": 0.6,  # short pickup pause; long delays cause hang-ups
@@ -102,6 +102,22 @@ class Config:
         self.groq_model: str = os.getenv(
             "GROQ_MODEL", j.get("groq_model", _DEFAULTS["groq_model"])
         )
+        self.llm_backend: str = os.getenv(
+            "LLM_BACKEND", j.get("llm_backend", "groq")
+        ).strip().lower()
+        self.local_llm_path: str = os.getenv(
+            "LOCAL_LLM_PATH",
+            j.get("local_llm_path", "models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf"),
+        )
+        self.llm_model_realtime: str = os.getenv(
+            "LLM_MODEL_REALTIME", j.get("llm_model_realtime", self.groq_model)
+        )
+        self.llm_model_batch: str = os.getenv(
+            "LLM_MODEL_BATCH", j.get("llm_model_batch", self.groq_model)
+        )
+        self.stt_backend: str = os.getenv(
+            "STT_BACKEND", j.get("stt_backend", "groq")
+        ).strip().lower()
         self.rotation_minutes: int = int(
             os.getenv("ROTATION_MINUTES", j.get("rotation_minutes", _DEFAULTS["rotation_minutes"]))
         )
@@ -137,6 +153,15 @@ class Config:
         )
         self.piper_noise_w_scale: float = float(
             os.getenv("PIPER_NOISE_W_SCALE", j.get("piper_noise_w_scale", _DEFAULTS["piper_noise_w_scale"]))
+        )
+        self.kokoro_model_path: str = os.getenv(
+            "KOKORO_MODEL_PATH", j.get("kokoro_model_path", "models/kokoro/kokoro-v1.0.onnx")
+        )
+        self.kokoro_voices_path: str = os.getenv(
+            "KOKORO_VOICES_PATH", j.get("kokoro_voices_path", "models/kokoro/voices-v1.0.bin")
+        )
+        self.kokoro_voice: str = os.getenv(
+            "KOKORO_VOICE", j.get("kokoro_voice", "af_heart")
         )
         self.tts_allow_sapi_fallback: bool = os.getenv(
             "TTS_ALLOW_SAPI_FALLBACK",
@@ -205,19 +230,53 @@ class Config:
         ).lower() not in ("false", "0", "no")
 
     def validate(self) -> None:
-        if not self.groq_api_key or self.groq_api_key.startswith("your_"):
+        local_answers = self.llm_backend == "local"
+        local_hearing = self.stt_backend == "local"
+        if not (local_answers and local_hearing):
+            if not self.groq_api_key or self.groq_api_key.startswith("your_"):
+                raise SystemExit(
+                    "GROQ_API_KEY not configured. Copy .env.example to .env and set a real key."
+                )
+            if self.groq_model in ("groq-alpha", ""):
+                raise SystemExit(
+                    f"GROQ_MODEL '{self.groq_model}' is not valid. "
+                    "Use e.g. llama-3.3-70b-versatile. See console.groq.com for model list."
+                )
+        if local_answers:
+            model = Path(self.local_llm_path).expanduser()
+            if not model.is_absolute():
+                model = BASE_DIR / model
+            if not model.is_file():
+                raise SystemExit(
+                    "Local answers are selected but the model file is missing. "
+                    f"Expected {model}."
+                )
+        if self.tts_engine not in {"edge", "edge-tts", "piper", "piper-tts", "kokoro"}:
             raise SystemExit(
-                "GROQ_API_KEY not configured. Copy .env.example to .env and set a real key."
+                f"TTS_ENGINE '{self.tts_engine}' is not supported. Use 'edge', 'piper', or 'kokoro'."
             )
-        if self.groq_model in ("groq-alpha", ""):
-            raise SystemExit(
-                f"GROQ_MODEL '{self.groq_model}' is not valid. "
-                "Use e.g. llama-3.3-70b-versatile. See console.groq.com for model list."
-            )
-        if self.tts_engine not in {"edge", "edge-tts", "piper"}:
-            raise SystemExit(
-                f"TTS_ENGINE '{self.tts_engine}' is not supported. Use 'edge' or 'piper'."
-            )
+        if self.tts_engine in {"piper", "piper-tts"}:
+            model = Path(self.piper_model_path).expanduser()
+            if not model.is_absolute():
+                model = BASE_DIR / model
+            config_path = Path(str(model) + ".json")
+            if not model.is_file() or not config_path.is_file():
+                raise SystemExit(
+                    "Piper TTS is selected but the voice model is incomplete. "
+                    f"Expected {model} and {config_path}."
+                )
+        if self.tts_engine == "kokoro":
+            model = Path(self.kokoro_model_path).expanduser()
+            voices = Path(self.kokoro_voices_path).expanduser()
+            if not model.is_absolute():
+                model = BASE_DIR / model
+            if not voices.is_absolute():
+                voices = BASE_DIR / voices
+            if not model.is_file() or not voices.is_file():
+                raise SystemExit(
+                    "Kokoro TTS is selected but the voice files are missing. "
+                    f"Expected {model} and {voices}."
+                )
 
     @classmethod
     def load(cls) -> "Config":

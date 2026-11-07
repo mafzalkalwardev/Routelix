@@ -87,6 +87,39 @@ class TTSCache:
         thread.start()
         logger.info("[TTS_CACHE] warmup started in background (%d phrases)", len(phrases))
 
+    def ensure(self, text: str) -> bool:
+        """Synthesize and store one phrase. Returns True when audio is cached."""
+        key = text.strip().lower()
+        if not key:
+            return False
+        with self._lock:
+            if key in self._cache:
+                return True
+        try:
+            import asyncio
+            import edge_tts  # type: ignore
+        except ImportError:
+            logger.warning("[TTS_CACHE] edge-tts not installed; phrase not cached")
+            return False
+        try:
+            communicate = edge_tts.Communicate(text, self.tts_voice)
+            buf = io.BytesIO()
+
+            async def _collect() -> bytes:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buf.write(chunk["data"])
+                return buf.getvalue()
+
+            audio_bytes = asyncio.run(_collect())
+        except Exception as exc:
+            logger.debug("[TTS_CACHE] failed to ensure '%s': %s", text[:40], exc)
+            return False
+        if not audio_bytes:
+            return False
+        self.put(text, audio_bytes)
+        return True
+
     def get(self, text: str) -> Optional[bytes]:
         """Return cached MP3 bytes for the given phrase, or None on cache miss."""
         key = text.strip().lower()

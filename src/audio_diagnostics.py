@@ -13,6 +13,7 @@ output_devices, capture_match, soundcard_ok, issues, suggestions, ok.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -105,10 +106,16 @@ def play_test_tts(
         "the caller can hear this."
     ),
     output_dir: Optional[Path] = None,
+    engine: str = "edge",
+    voice: str = "en-US-GuyNeural",
+    piper_model_path: str | Path | None = None,
+    piper_length_scale: float = 1.0,
+    piper_noise_scale: float = 0.667,
+    piper_noise_w_scale: float = 0.8,
 ) -> dict:
     """Generate a short TTS WAV and play it to the configured loopback output."""
     from src.paths import runtime_base
-    from src.tts import save_text_to_speech
+    from src.realtime_tts import save_tts_wav
     from src.voice_playback import (
         describe_audio_device,
         find_playable_loopback_device,
@@ -120,7 +127,16 @@ def play_test_tts(
     wav_path = diagnostics_dir / f"tts_loopback_test_{time.strftime('%Y%m%d_%H%M%S')}.wav"
 
     logger.info("Audio test: generating TTS file for LOOPBACK_DEVICE='%s'", output_hint)
-    save_text_to_speech(text, wav_path)
+    save_tts_wav(
+        text,
+        wav_path,
+        engine=engine,
+        voice=voice,
+        piper_model_path=piper_model_path,
+        piper_length_scale=piper_length_scale,
+        piper_noise_scale=piper_noise_scale,
+        piper_noise_w_scale=piper_noise_w_scale,
+    )
     device_index = find_playable_loopback_device(output_hint)
     if device_index is None:
         raise RuntimeError(f"No playable LOOPBACK_DEVICE found for '{output_hint}'")
@@ -208,7 +224,19 @@ def record_capture_sample(
 
     stt_text = ""
     stt_error = ""
-    if stt_api_key:
+    if os.getenv("STT_BACKEND", "groq").strip().lower() == "local":
+        logger.info("Audio test: local STT started for capture sample")
+        try:
+            from src.stt import LocalWhisperSTT
+            stt = LocalWhisperSTT(model_size=os.getenv("STT_LOCAL_MODEL", "base"))
+            stt_text = stt.transcribe(audio, samplerate=samplerate)
+            if not stt_text:
+                stt_error = stt.last_empty_reason
+                logger.info("Audio test: STT empty for capture sample")
+        except Exception as exc:
+            stt_error = str(exc)
+            logger.error("Audio test: STT failed for capture sample: %s", exc)
+    elif stt_api_key:
         logger.info("Audio test: STT started for capture sample")
         try:
             stt = GroqWhisperSTT(api_key=stt_api_key, model=stt_model)

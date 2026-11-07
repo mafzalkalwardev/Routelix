@@ -117,10 +117,15 @@ _EQUIPMENT_CONTEXT: dict[str, str] = {
 
 
 class GroqAgent:
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
-        if not api_key:
-            raise ValueError("api_key is required for GroqAgent")
-        self._client = Groq(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", backend: str = "groq"):
+        self._backend = (backend or "groq").strip().lower()
+        if self._backend == "local":
+            from src.local_llm import LocalChatClient
+            self._client = LocalChatClient()
+        else:
+            if not api_key:
+                raise ValueError("api_key is required for GroqAgent")
+            self._client = Groq(api_key=api_key)
         self.model = model
 
     def _complete(self, system: str, user: str, max_tokens: int = 512) -> str:

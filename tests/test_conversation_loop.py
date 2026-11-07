@@ -213,6 +213,7 @@ def test_response_loop_calls_stt_then_agent_then_tts():
 
         mock_agent.should_end_call.side_effect = end_after_one
         mock_agent.goodbye_line.return_value = ""
+        loop._stream_llm_replies = False
 
         audio_seg = np.random.rand(16000).astype(np.float32) * 0.1
         loop._speech_q.put(audio_seg)

@@ -886,7 +886,15 @@ async def api_audio_test_tts(request: Request):
     loopback = body.get("loopback_device") or cfg.get("loopback_device", "CABLE Input")
     try:
         from src.audio_diagnostics import play_test_tts  # type: ignore
-        return play_test_tts(output_hint=loopback)
+        return play_test_tts(
+            output_hint=loopback,
+            engine=cfg.get("tts_engine", "edge"),
+            voice=cfg.get("tts_voice", "en-US-GuyNeural"),
+            piper_model_path=cfg.get("piper_model_path"),
+            piper_length_scale=float(cfg.get("piper_length_scale", 1.0)),
+            piper_noise_scale=float(cfg.get("piper_noise_scale", 0.667)),
+            piper_noise_w_scale=float(cfg.get("piper_noise_w_scale", 0.8)),
+        )
     except Exception as exc:
         logger.exception("Audio TTS test failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})

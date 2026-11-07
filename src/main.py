@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -150,7 +151,18 @@ def _run_audio_route_test(args: argparse.Namespace, cfg: Config) -> int:
         return 1
 
     try:
-        save_text_to_speech(phrase, wav_path)
+        from src.realtime_tts import save_tts_wav
+
+        save_tts_wav(
+            phrase,
+            wav_path,
+            engine=cfg.tts_engine,
+            voice=cfg.tts_voice,
+            piper_model_path=cfg.piper_model_path,
+            piper_length_scale=cfg.piper_length_scale,
+            piper_noise_scale=cfg.piper_noise_scale,
+            piper_noise_w_scale=cfg.piper_noise_w_scale,
+        )
         duration = play_wav_loopback(
             wav_path,
             device_hint=loopback_device,
@@ -192,10 +204,10 @@ def _run_call(
     tts_engine: str = "edge",
     tts_voice: str = "en-US-GuyNeural",
     piper_model_path: str = "models/piper/en_US-lessac-medium.onnx",
-    piper_length_scale: float = 1.0,
-    piper_noise_scale: float = 0.667,
-    piper_noise_w_scale: float = 0.8,
-    stt_model: str = "whisper-large-v3-turbo",
+    piper_length_scale: float = 1.07,
+    piper_noise_scale: float = 0.5,
+    piper_noise_w_scale: float = 0.92,
+    stt_model: str = "whisper-large-v3",
     vad_threshold: float = 0.015,
     groq_api_key: str = "",
     answered_speak_delay: float = 4.0,
@@ -245,7 +257,18 @@ def _run_call(
         script_path = script_dir / f"script_{index}_{phone.replace('+', '')}.wav"
         script_text_path = script_path.with_suffix(".txt")
         script_text_path.write_text(script_text, encoding="utf-8")
-        save_text_to_speech(script_text, script_path)
+        from src.realtime_tts import save_tts_wav
+
+        save_tts_wav(
+            script_text,
+            script_path,
+            engine=tts_engine,
+            voice=tts_voice,
+            piper_model_path=piper_model_path,
+            piper_length_scale=piper_length_scale,
+            piper_noise_scale=piper_noise_scale,
+            piper_noise_w_scale=piper_noise_w_scale,
+        )
 
     voicemail_text = ai.generate_voicemail(
         contact_name=name,
@@ -275,6 +298,9 @@ def _run_call(
             piper_noise_w_scale=piper_noise_w_scale,
         )
     except Exception as exc:
+        if str(tts_engine).strip().lower() in {"piper", "piper-tts"}:
+            logger.error("[%d] Piper voicemail generation failed: %s", index, exc)
+            raise
         logger.warning("[%d] edge-tts voicemail generation failed (%s); using SAPI fallback", index, exc)
         save_text_to_speech(voicemail_text, voicemail_path)
 
@@ -628,9 +654,9 @@ def _handle_call_screening(
     tts_voice: str = "en-US-GuyNeural",
     tts_engine: str = "edge",
     piper_model_path: str = "models/piper/en_US-lessac-medium.onnx",
-    piper_length_scale: float = 1.0,
-    piper_noise_scale: float = 0.667,
-    piper_noise_w_scale: float = 0.8,
+    piper_length_scale: float = 1.07,
+    piper_noise_scale: float = 0.5,
+    piper_noise_w_scale: float = 0.92,
     tts: object | None = None,
     allow_sapi_fallback: bool = False,
 ) -> bool:
@@ -842,13 +868,23 @@ def _run_realtime_loop(
             contact_name=contact_name,
             contact_phone=session.phone,
             rate_limit_per_minute=groq_max_retries_per_minute,
+            backend=os.getenv("LLM_BACKEND", "groq"),
         )
-        stt = GroqWhisperSTT(
-            api_key=groq_api_key,
-            model=stt_model,
-            retry_count=stt_retry_count,
-            use_stt_context=use_stt_context,
-        )
+        if os.getenv("STT_BACKEND", "groq").strip().lower() == "local":
+            from src.stt import LocalWhisperSTT
+            stt = LocalWhisperSTT(
+                model_size=os.getenv("STT_LOCAL_MODEL", "base"),
+                model_dir=os.getenv("STT_MODEL_DIR", "models/stt"),
+                retry_count=stt_retry_count,
+                use_stt_context=use_stt_context,
+            )
+        else:
+            stt = GroqWhisperSTT(
+                api_key=groq_api_key,
+                model=stt_model,
+                retry_count=stt_retry_count,
+                use_stt_context=use_stt_context,
+            )
         vad_cfg = VADConfig(
             speech_threshold=vad_threshold,
             silence_trigger_frames=vad_silence_frames,
@@ -1199,7 +1235,7 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             "CALLBACK_NUMBER is not configured. Add it to .env or pass --callback-number."
         )
 
-    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch)
+    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch, backend=cfg.llm_backend)
     output_dir   = ensure_audio_dir(args.output_dir)
     script_dir   = output_dir / "scripts"
     voicemail_dir = output_dir / "voicemails"
@@ -1339,7 +1375,7 @@ def _run_parallel_live_batch(
         browser.warn_if_mic_not_set(cable_output)
         return {
             "browser": browser,
-            "ai": GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch),
+            "ai": GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch, backend=cfg.llm_backend),
             "loopback_index": loopback_index,
             "capture_device": safe_capture_hint(slot.capture_device, slot.loopback_device),
             "calls_completed": 0,
@@ -1525,7 +1561,7 @@ def main() -> None:
         args.limit,
     )
 
-    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch)
+    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch, backend=cfg.llm_backend)
 
     output_dir = ensure_audio_dir(args.output_dir)
     script_dir = output_dir / "scripts"
@@ -1737,7 +1773,11 @@ def main() -> None:
 
     logger.info("Logged in. Starting call loop (%d contacts).", len(contacts))
 
-    if cfg.tts_warmup and loopback_device_index is not None:
+    if (
+        cfg.tts_warmup
+        and loopback_device_index is not None
+        and str(tts_engine).strip().lower() not in {"piper", "piper-tts"}
+    ):
         try:
             from src.opening_pool import warmup_phrases
             from src.tts_cache import TTSCache
@@ -1746,6 +1786,8 @@ def main() -> None:
             cache.warm(warmup_phrases(agent_name, company_name))
         except Exception as exc:
             logger.debug("Opening TTS warmup skipped: %s", exc)
+    elif cfg.tts_warmup and str(tts_engine).strip().lower() in {"piper", "piper-tts"}:
+        logger.info("Piper voice stays loaded and repeated lines are cached during the call")
 
     call_cooldown_seconds = float(cfg.call_cooldown_seconds)
     from src.log_rotation import rotate_logs_if_needed

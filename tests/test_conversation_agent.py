@@ -218,9 +218,11 @@ def test_respond_to_handles_api_error(mock_groq):
     mock_client.chat.completions.create.side_effect = Exception("network error")
     from src.conversation_agent import ConversationAgent
     agent = ConversationAgent(api_key="test_key")
-    reply = agent.respond_to("Hello")
-    assert isinstance(reply, str)
-    assert len(reply) > 0  # fallback phrase
+    first = agent.respond_to("Hello")
+    second = agent.respond_to("I run a dry van.")
+    assert first == "I missed that last part. Go ahead."
+    assert second != first
+    assert agent.should_end_call()
 
 
 def test_respond_to_retries_rate_limit(mock_groq):

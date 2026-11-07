@@ -1553,6 +1553,16 @@ def get_transcript_text(filename: str) -> str:
     return ""
 
 
+def get_recent_call_artifacts(limit: int = 100) -> list[dict]:
+    """Connected-call rows for the recordings page."""
+    return get_connected_calls()[: max(0, int(limit))]
+
+
+def get_call_for_ui(call_id: str) -> Optional[dict]:
+    """One connected call for the recording viewer."""
+    return get_connected_call(call_id)
+
+
 def carrier_stats(profiles: list[dict]) -> dict:
     total = len(profiles)
     interested = sum(1 for p in profiles if p.get("interested_status") in ("Yes", "Interested", "Hot Lead"))

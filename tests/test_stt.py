@@ -92,6 +92,19 @@ def test_transcribe_handles_api_error(mock_groq):
     assert result == ""
 
 
+def test_transcribe_drops_low_energy_hallucination(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.audio.transcriptions.create.return_value = MagicMock(text="Thank you.")
+
+    from src.stt import GroqWhisperSTT
+    stt = GroqWhisperSTT(api_key="test_key")
+    audio = np.full(16000, 0.001, dtype=np.float32)
+    result = stt.transcribe(audio, samplerate=16000)
+
+    assert result == ""
+    assert "hallucination" in stt.last_empty_reason
+
+
 def test_missing_api_key_raises():
     from src.stt import GroqWhisperSTT
     with pytest.raises(ValueError, match="api_key"):

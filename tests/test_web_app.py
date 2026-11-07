@@ -32,7 +32,7 @@ def test_dashboard_loads(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "ROUTELIX" in r.text
-    assert "/static/indus-logo.jpg" in r.text
+    assert "/static/routelix-mark.svg" in r.text
 
 
 def test_preflight_page_loads(client):
