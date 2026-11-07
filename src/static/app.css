@@ -148,6 +148,20 @@ html[data-theme="dark"] .nav-link {
   gap: .75rem;
 }
 
+.topbar-mark {
+  width: 28px;
+  height: 28px;
+  display: block;
+  flex: none;
+}
+
+.topbar-brand {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+}
+
 .topbar-title {
   font-size: .875rem;
   font-weight: 700;
