@@ -156,7 +156,7 @@ class FakeAgent:
         self._replies = [
             "Great, are you mainly running dry van loads regionally or over the road?",
             "That works. Which lanes do you like most when rates are decent?",
-            "We tailor the percentage by setup, but a quick onboarding call gets exact terms.",
+            "We tailor the percentage by setup — what's the best email for the packet so we can start today?",
         ]
         self._turn = 0
 

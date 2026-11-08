@@ -10,6 +10,19 @@ def _browser() -> GoogleVoiceBrowser:
     return b
 
 
+def test_answered_panel_text_and_voicemail_cue():
+    b = _browser()
+    button = MagicMock()
+    button.is_displayed.return_value = True
+    button.get_attribute.side_effect = lambda name: "Hang up" if name == "aria-label" else ""
+    b.driver.find_elements.return_value = [button]
+    with patch.object(b, "_active_call_dom_text", return_value=""):
+        assert "Hang up" in b.answered_call_panel_text()
+    with patch.object(b, "_voicemail_cue_present", return_value=True), \
+         patch.object(b, "_page_contains_voicemail", return_value=False):
+        assert b.voicemail_dom_cue() is True
+
+
 def test_is_call_screening_active_from_page_source():
     b = _browser()
     b.driver.page_source = "<html>Please record your name and reason for calling</html>"

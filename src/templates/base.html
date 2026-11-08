@@ -183,7 +183,17 @@
     </div>
     <div class="topbar-right">
       <span id="topbarClock"></span>
+      <span class="run-badge" id="globalLiveCallBadge" style="display:none">LIVE</span>
       <span class="status-pill" id="globalStatusPill">IDLE</span>
+
+      <button id="listenInTopbarBtn"
+              class="btn btn-ghost btn-sm"
+              type="button"
+              title="Hear both sides on Speakers. Recordings always keep both voices."
+              aria-pressed="false"
+              onclick="window.routelixToggleListenIn && window.routelixToggleListenIn()">
+        Listen-in: Off
+      </button>
 
       <button id="themeToggle"
               class="btn btn-ghost btn-sm"
@@ -210,6 +220,7 @@
 <script src="/static/app.js"></script>
 
 <script src="/static/theme-toggle.js"></script>
+<script src="/static/live_call.js"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

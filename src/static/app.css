@@ -1003,6 +1003,69 @@ html[data-theme="dark"] .nav-link {
 
 .state-card--active .state-card-label { color: #fff; }
 
+/* Realtime live-call panel (CRM + Live Run) */
+.live-call-panel {
+  margin-bottom: 1rem;
+  padding: 1rem 1.15rem;
+  border-radius: 10px;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(15, 36, 71, 0.04));
+}
+.live-call-panel--hidden { display: none; }
+.live-call-panel-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+.live-call-phase {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--navy);
+  margin-bottom: 0.15rem;
+}
+.live-call-who { font-size: 0.92rem; font-weight: 600; }
+.live-call-msg { font-size: 0.82rem; color: var(--muted); margin-top: 0.25rem; }
+.live-call--voicemail { border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.1); }
+.live-call--failed { border-color: rgba(220, 38, 38, 0.4); background: rgba(220, 38, 38, 0.08); }
+.live-call--noanswer { border-color: rgba(100, 116, 139, 0.4); background: rgba(100, 116, 139, 0.08); }
+.live-call--ok { border-color: rgba(22, 163, 74, 0.4); background: rgba(22, 163, 74, 0.08); }
+.live-call--dry { border-color: rgba(100, 116, 139, 0.35); }
+.live-call--active { border-color: rgba(37, 99, 235, 0.4); }
+
+.live-call-result-banner {
+  display: none;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  border: 2px solid rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.14);
+  animation: liveCallPulse 1.4s ease-in-out 2;
+}
+.live-call-result-kicker {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.live-call-result-title {
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.live-call-result-detail { font-size: 0.88rem; margin-top: 0.2rem; }
+.run-badge--result { background: #f59e0b; color: #111; }
+@keyframes liveCallPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.01); }
+}
+
 /* Live log viewer */
 .log-viewer {
   height: 360px;

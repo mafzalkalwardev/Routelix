@@ -251,6 +251,37 @@ def check_callback_number() -> CheckResult:
     return CheckResult("Callback Number", "ok", f"Callback number configured: {masked}")
 
 
+def check_auto_audio_route(loopback_device: Optional[str] = None) -> CheckResult:
+    """Verify VB-CABLE + Speakers endpoints exist for automatic live-call routing."""
+    try:
+        from src.audio_setup import find_endpoint, find_speaker_endpoint, paired_or_cable
+
+        loopback = loopback_device or os.getenv("LOOPBACK_DEVICE", "CABLE Input")
+        mic_hint = paired_or_cable(loopback)
+        mic = find_endpoint("Capture", mic_hint)
+        speaker = find_speaker_endpoint()
+        if mic is None:
+            return CheckResult(
+                "Auto Audio Route",
+                "fail",
+                f"Cannot auto-set Chrome mic — '{mic_hint}' not found. Install VB-CABLE.",
+            )
+        if speaker is None:
+            return CheckResult(
+                "Auto Audio Route",
+                "warn",
+                f"Mic '{mic.name}' found, but no Speakers device for call playback/capture.",
+            )
+        return CheckResult(
+            "Auto Audio Route",
+            "ok",
+            f"Ready to auto-set mic→{mic.name.split('|')[0].strip()}, "
+            f"speaker→{speaker.name.split('|')[0].strip()} before live calls",
+        )
+    except Exception as exc:
+        return CheckResult("Auto Audio Route", "warn", f"Auto audio route check error: {exc}")
+
+
 def run_all(
     groq_api_key: Optional[str] = None,
     contacts_file: Optional[Path] = None,
@@ -265,6 +296,7 @@ def run_all(
         check_chrome_profile(profile_name),
         check_audio_loopback(loopback_device),
         check_capture_device(capture_device),
+        check_auto_audio_route(loopback_device),
         check_piper_voice(),
         check_local_models(),
         check_callback_number(),

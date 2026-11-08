@@ -44,8 +44,53 @@
     setTimeout(pollGlobalStatus, 4000);
   }
 
+  // ── Live listen-in (Speakers unmute; recordings always keep both sides) ──
+  function setListenInButton(enabled) {
+    const btn = document.getElementById('listenInTopbarBtn');
+    if (!btn) return;
+    btn.textContent = enabled ? 'Listen-in: On' : 'Listen-in: Off';
+    btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    btn.classList.toggle('status-pill--running', !!enabled);
+  }
+
+  async function refreshListenIn() {
+    try {
+      const r = await fetch('/api/audio/listen-in');
+      const data = await r.json();
+      setListenInButton(!!data.enabled);
+      const runBox = document.getElementById('rListenIn');
+      if (runBox) runBox.checked = !!data.enabled;
+      const audioBox = document.getElementById('listenInToggle');
+      if (audioBox) audioBox.checked = !!data.enabled;
+    } catch (_) {
+      // ignore while server starts
+    }
+  }
+
+  window.routelixToggleListenIn = async function routelixToggleListenIn() {
+    const btn = document.getElementById('listenInTopbarBtn');
+    const currentlyOn = btn && btn.getAttribute('aria-pressed') === 'true';
+    const enabled = !currentlyOn;
+    try {
+      const r = await fetch('/api/audio/listen-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await r.json();
+      setListenInButton(!!data.enabled);
+      const runBox = document.getElementById('rListenIn');
+      if (runBox) runBox.checked = !!data.enabled;
+      const audioBox = document.getElementById('listenInToggle');
+      if (audioBox) audioBox.checked = !!data.enabled;
+    } catch (_) {
+      // leave UI unchanged on failure
+    }
+  };
+
   document.addEventListener('DOMContentLoaded', () => {
     startClock();
     pollGlobalStatus();
+    refreshListenIn();
   });
 })();

@@ -80,6 +80,7 @@ templates.env.filters["url_encode"] = lambda v: _url_quote(str(v or ""), safe=""
 _CONFIG_KEYS = [
     "contacts_file", "profile_name", "callback_number", "agent_name",
     "company_name", "company_website", "company_context",
+    "screening_purpose_text", "call_objective", "call_offer",
     "groq_model", "loopback_device", "call_timeout", "call_max_duration",
     "capture_device", "tts_engine", "tts_voice", "piper_model_path",
     "piper_length_scale", "piper_noise_scale", "piper_noise_w_scale",
@@ -94,8 +95,9 @@ _CONFIG_KEYS = [
     "use_thinking_fillers", "filler_probability", "stream_llm_replies",
     "voicemail_max_wait_seconds", "voicemail_play_on_greeting",
     "voicemail_play_after_seconds", "voicemail_message_max_seconds",
-    "voicemail_greeting_frames_required", "screening_purpose_text",
+    "voicemail_greeting_frames_required",
     "chrome_restart_every_n_calls", "max_calls_per_run",
+    "auto_audio_setup", "chrome_headless", "live_listen_enabled",
     "groq_max_retries_per_minute", "avoid_gv_page_reload",
     "use_call_intelligence", "n_slots", "max_concurrent_dials",
     "force_requested_slots", "allow_shared_audio_routes", "parallel_profiles",
@@ -162,6 +164,8 @@ def _load_config() -> dict:
             "voicemail_max_wait_seconds": get_cfg("voicemail_max_wait_seconds", 25.0),
             "voicemail_play_on_greeting": get_cfg("voicemail_play_on_greeting", True),
             "chrome_restart_every_n_calls": get_cfg("chrome_restart_every_n_calls", 0),
+            "chrome_headless": get_cfg("chrome_headless", True),
+            "live_listen_enabled": get_cfg("live_listen_enabled", False),
             "avoid_gv_page_reload": get_cfg("avoid_gv_page_reload", True),
             "use_call_intelligence": get_cfg("use_call_intelligence", True),
             "n_slots": cfg.n_slots,
@@ -401,6 +405,7 @@ def _build_run_args(
     capture: str,
     callback: str,
     dry_run: bool,
+    headless: bool = True,
 ) -> List[str]:
     args = [
         "--contacts", contacts,
@@ -413,6 +418,7 @@ def _build_run_args(
         args += ["--callback-number", callback]
     if dry_run:
         args.append("--dry-run")
+    args.append("--headless" if headless else "--no-headless")
     return args
 
 
@@ -743,6 +749,9 @@ async def api_save_settings(request: Request):
         "wait_for_human_audio", "tts_warmup", "tts_allow_sapi_fallback",
         "force_requested_slots",
         "allow_shared_audio_routes",
+        "chrome_headless",
+        "auto_audio_setup",
+        "live_listen_enabled",
     ):
         if f in allowed:
             allowed[f] = str(allowed[f]).lower() in ("true", "1", "yes", "on")
@@ -933,6 +942,15 @@ async def api_run_start(request: Request):
     loopback = body.get("loopback_device") or cfg.get("loopback_device", "CABLE Input")
     capture = body.get("capture_device") or cfg.get("capture_device", "default")
     callback = body.get("callback_number") or cfg.get("callback_number", "")
+    headless = bool(body.get("headless", cfg.get("chrome_headless", True)))
+    if "live_listen_enabled" in body:
+        listen_in = bool(body.get("live_listen_enabled"))
+        _save_config({"live_listen_enabled": listen_in, "chrome_headless": headless})
+        from src.audio_setup import set_default_speaker_muted
+
+        set_default_speaker_muted(not listen_in)
+    else:
+        _save_config({"chrome_headless": headless})
 
     args = _build_run_args(
         contacts=contacts,
@@ -942,6 +960,7 @@ async def api_run_start(request: Request):
         capture=capture,
         callback=callback,
         dry_run=dry_run,
+        headless=headless,
     )
 
     result = run_manager.start(args)
@@ -968,6 +987,15 @@ async def api_run_single_call(request: Request):
     loopback = body.get("loopback_device") or cfg.get("loopback_device", "CABLE Input")
     capture = body.get("capture_device") or cfg.get("capture_device", "default")
     callback = body.get("callback_number") or cfg.get("callback_number", "")
+    headless = bool(body.get("headless", cfg.get("chrome_headless", True)))
+    if "live_listen_enabled" in body:
+        listen_in = bool(body.get("live_listen_enabled"))
+        _save_config({"live_listen_enabled": listen_in, "chrome_headless": headless})
+        from src.audio_setup import set_default_speaker_muted
+
+        set_default_speaker_muted(not listen_in)
+    else:
+        _save_config({"chrome_headless": headless})
 
     args = _build_run_args(
         contacts=str(contacts_file),
@@ -977,6 +1005,7 @@ async def api_run_single_call(request: Request):
         capture=capture,
         callback=callback,
         dry_run=dry_run,
+        headless=headless,
     )
     result = run_manager.start(args)
     if result.get("ok"):
@@ -994,6 +1023,60 @@ async def api_run_stop():
 @app.get("/api/run/status")
 async def api_run_status():
     return run_manager.get_state()
+
+
+@app.get("/api/live-call")
+async def api_live_call():
+    """Realtime dialer status for CRM / Live Run (includes end-result hold)."""
+    from src.live_call_status import get_live_call
+
+    return get_live_call()
+
+
+@app.get("/api/audio/listen-in")
+async def api_audio_listen_in_get():
+    """Whether Speakers are unmuted for live listen-in."""
+    from src.audio_setup import get_default_speaker_muted
+
+    cfg = _load_config()
+    muted = get_default_speaker_muted()
+    enabled = bool(cfg.get("live_listen_enabled", False))
+    if muted is not None:
+        enabled = not muted
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "speakers_muted": muted,
+        "note": (
+            "Recordings always save both sides. Listen-in only controls Speakers playback."
+        ),
+    }
+
+
+@app.post("/api/audio/listen-in")
+async def api_audio_listen_in_set(request: Request):
+    """
+    Toggle Speakers listen-in for live calls.
+    enabled=true → unmute Speakers so you can hear both sides
+    enabled=false → mute Speakers (silent dialing; recordings unchanged)
+    """
+    from src.audio_setup import get_default_speaker_muted, set_default_speaker_muted
+
+    body = await request.json()
+    enabled = bool(body.get("enabled", False))
+    ok = set_default_speaker_muted(not enabled)
+    muted = get_default_speaker_muted()
+    _save_config({"live_listen_enabled": enabled})
+    return {
+        "ok": ok,
+        "enabled": enabled if muted is None else (not muted),
+        "speakers_muted": muted,
+        "message": (
+            "Listen-in ON — Speakers unmuted"
+            if enabled
+            else "Listen-in OFF — Speakers muted (recordings still capture both sides)"
+        ),
+    }
 
 
 @app.get("/api/run/lines")

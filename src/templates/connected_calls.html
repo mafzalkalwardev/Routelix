@@ -15,6 +15,21 @@
   </div>
 </div>
 
+<div id="liveCallResultBanner" class="live-call-result-banner" style="display:none">
+  <div>
+    <div class="live-call-result-kicker">Call finished</div>
+    <div class="live-call-result-title" id="liveCallResultTitle">—</div>
+    <div class="live-call-result-detail" id="liveCallResultDetail"></div>
+  </div>
+</div>
+
+<div id="liveCallPanel" class="live-call-panel live-call-panel--hidden">
+  <div class="live-call-panel-label">Realtime call</div>
+  <div class="live-call-phase" id="liveCallPhase">Idle</div>
+  <div class="live-call-who" id="liveCallWho">—</div>
+  <div class="live-call-msg" id="liveCallMsg"></div>
+</div>
+
 <div class="card-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:1.25rem">
   <div class="stat-card stat-card--slate"><div class="stat-body"><div class="stat-label">Connected</div><div class="stat-value">{{ stats.total }}</div></div></div>
   <div class="stat-card stat-card--green"><div class="stat-body"><div class="stat-label">Interested</div><div class="stat-value">{{ stats.interested }}</div></div></div>

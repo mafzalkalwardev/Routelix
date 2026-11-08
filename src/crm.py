@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -595,8 +596,27 @@ def transcribe_recording(
     prompt: str = "INDUS TRANSPORTS freight dispatch carrier conversation",
 ) -> str:
     """Transcribe a saved WAV recording. Returns empty string on any failure."""
-    if not groq_api_key or not recording_path.exists():
+    if not recording_path.exists():
         return ""
+    backend = os.getenv("STT_BACKEND", "groq").strip().lower()
+    if backend == "local" or not groq_api_key:
+        try:
+            import soundfile as sf  # type: ignore
+
+            from src.stt import LocalWhisperSTT
+
+            audio, rate = sf.read(str(recording_path), dtype="float32")
+            if getattr(audio, "ndim", 1) > 1:
+                audio = audio.mean(axis=1)
+            stt = LocalWhisperSTT(
+                model_size=os.getenv("STT_LOCAL_MODEL", "base"),
+                model_dir=os.getenv("STT_MODEL_DIR", "models/stt"),
+            )
+            return _clean(stt.transcribe(audio, samplerate=int(rate) or 16000, prompt=prompt))
+        except Exception as exc:
+            logger.warning("Local recording transcription failed for %s: %s", recording_path, exc)
+            if not groq_api_key:
+                return ""
     try:
         from groq import Groq  # type: ignore
 

@@ -25,6 +25,22 @@ class _Completion:
         self.choices = [_Choice(content)]
 
 
+def _fit_messages(messages: list, max_chars: int = 6000) -> list:
+    """Keep the system prompt and the newest turns inside the local context."""
+    system = [message for message in messages if message.get("role") == "system"]
+    rest = [message for message in messages if message.get("role") != "system"]
+    used = sum(len(str(message.get("content") or "")) for message in system)
+    kept: list = []
+    for message in reversed(rest):
+        size = len(str(message.get("content") or ""))
+        if kept and used + size > max_chars:
+            break
+        kept.append(message)
+        used += size
+    kept.reverse()
+    return [*system, *kept]
+
+
 def resolve_model_path(path: str | None = None) -> Path:
     raw = path or os.getenv(
         "LOCAL_LLM_PATH",
@@ -50,14 +66,38 @@ def get_llama(path: str | None = None):
             return _LLM
         from llama_cpp import Llama
 
+        # Use most CPU threads but leave headroom for STT/TTS on the same laptop.
+        try:
+            cpu = int(os.cpu_count() or 4)
+        except Exception:
+            cpu = 4
+        threads = max(2, min(6, cpu - 1))
+        try:
+            ctx = int(os.getenv("LOCAL_LLM_CTX", "2048"))
+        except ValueError:
+            ctx = 2048
+        try:
+            batch = int(os.getenv("LOCAL_LLM_BATCH", "256"))
+        except ValueError:
+            batch = 256
+
         _LLM = Llama(
             model_path=str(model),
-            n_ctx=2048,
-            n_threads=4,
+            n_ctx=max(512, min(ctx, 4096)),
+            n_threads=threads,
             n_gpu_layers=0,
-            n_batch=128,
+            n_batch=max(32, min(batch, 512)),
             verbose=False,
         )
+        logger_msg = (
+            f"Local LLM ready: {model.name} threads={threads} ctx={ctx} batch={batch}"
+        )
+        try:
+            import logging
+
+            logging.getLogger("GoogleVoiceAgent").info(logger_msg)
+        except Exception:
+            pass
         _LOADED_PATH = str(model)
         return _LLM
 
@@ -78,7 +118,7 @@ class LocalChatClient:
             self._outer = outer
 
         def create(self, **kwargs) -> _Completion:
-            messages = list(kwargs.get("messages") or [])
+            messages = _fit_messages(list(kwargs.get("messages") or []))
             max_tokens = int(kwargs.get("max_tokens") or 80)
             temperature = float(kwargs.get("temperature") if kwargs.get("temperature") is not None else 0.7)
             llm = get_llama(self._outer._model_path)

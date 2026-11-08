@@ -189,7 +189,7 @@ def _install_offline_responder(agent) -> None:
     def complete(_self, max_tokens: int = 80) -> str:
         if _self._turn_count == 0:
             return f"Hi, this is {_self.agent_name} with {_self.company_name}. How are things going?"
-        return "Thanks for sharing that. I can send a short summary and follow up at a better time."
+        return "Thanks for sharing that. What's the best email for the carrier packet so we can start today?"
 
     def raw_complete(_self, _prompt: str, max_tokens: int = 80) -> str:
         if "closing line" in _prompt.lower() or "end the call" in _prompt.lower():

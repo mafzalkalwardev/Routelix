@@ -49,13 +49,14 @@ _CALL_SCRIPT_SYSTEM = (
     "playback. Sound calm, confident, specific, and human — not scripted or robotic. "
     "Use this shape: introduce agent and company briefly, name ONE real trucking pain "
     "point relevant to the carrier's equipment type, connect it to dispatch value, ask "
-    "one specific qualifying question about their equipment or lanes, and offer a "
-    "low-friction 15-minute onboarding call. If equipment type is known, reference "
-    "specific freight, RPM ranges, or common challenges for that equipment. Include a "
-    "soft skepticism bridge (e.g., acknowledge they may already have dispatch covered). "
-    "Do not use labels, stage directions, bullets, or quotation marks. "
-    "Do not guarantee earnings, do not invent facts, and do not sound pushy. "
-    "Keep the full spoken script under 95 words."
+    "one specific qualifying question about their equipment or lanes, and close on THIS "
+    "call by asking for the best email to send the carrier packet and start today. "
+    "If equipment type is known, reference specific freight, RPM ranges, or common "
+    "challenges for that equipment. Include a soft skepticism bridge (e.g., acknowledge "
+    "they may already have dispatch covered). Never pitch a later 15-minute appointment "
+    "or say someone will call them back. Do not use labels, stage directions, bullets, "
+    "or quotation marks. Do not guarantee earnings, do not invent facts, and do not sound "
+    "pushy. Keep the full spoken script under 95 words."
 )
 
 _VOICEMAIL_SYSTEM = (
@@ -136,10 +137,10 @@ class GroqAgent:
         """
 
         fallback = (
-            "Hi, this is Tony with Indus Transports LLC. "
-            "I’m calling because we help carriers keep dispatch moving with less "
-            "broker paperwork delays and more consistent load options. "
-            "Are you currently running Dry Van, Reefer, or Flatbed?"
+            "Hi, this is Ashley with Indus Transports LLC. "
+            "We help owner-operators with dedicated dispatch — load search, "
+            "rate negotiation, and broker paperwork across the forty-eight states. "
+            "What are you mainly running right now — Dry Van, Reefer, or Flatbed?"
         )
 
 

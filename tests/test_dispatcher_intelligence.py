@@ -49,23 +49,36 @@ def test_dynamic_prompt_contains_modular_knowledge_sections():
     )
     for section in (
         "MARKET KNOWLEDGE",
+        "RATE BENCHMARKS",
+        "FUEL COST KNOWLEDGE",
         "EQUIPMENT KNOWLEDGE",
         "NEGOTIATION RULES",
+        "SERVICES PITCH",
         "COMPLIANCE RULES",
         "OBJECTION HANDLING",
         "LANE STRATEGY",
         "PAYMENT AND FACTORING KNOWLEDGE",
     ):
         assert section in prompt
-    assert "Texas outbound is generally strong" in prompt
+    assert "Texas outbound" in prompt
+    assert "Dry Van now" in prompt
+    assert "diesel" in prompt.lower()
     assert "Flatbed" in prompt
 
 
-def test_pricing_reply_asks_for_expected_percentage_first():
+def test_pricing_reply_offers_percent_or_salary():
     state = DispatcherConversationState(truck_type="Hotshot")
     reply = build_pricing_reply(state, "What do you charge?")
     assert "10%" in reply
-    assert "What percentage were you hoping for?" in reply
+    assert "1000" in reply or "1,000" in reply or "thousand" in reply.lower()
+    assert "Which do you prefer?" in reply
+
+
+def test_pricing_reply_salary_path():
+    state = DispatcherConversationState(truck_type="Dry Van")
+    reply = build_pricing_reply(state, "Do you offer a monthly salary?")
+    assert "1000" in reply or "thousand" in reply.lower()
+    assert "first" in reply.lower() and "fifth" in reply.lower()
 
 
 def test_pricing_reply_counters_too_low_without_desperation():

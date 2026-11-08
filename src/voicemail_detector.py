@@ -26,6 +26,7 @@ Usage in ConversationLoop:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -33,20 +34,110 @@ from typing import Deque, Optional
 
 import numpy as np
 
+_DIGIT_RUN = re.compile(r"\d[\d\s\-]{5,}\d")
+
 logger = logging.getLogger("GoogleVoiceAgent")
 
 
 VOICEMAIL_KEYWORDS = (
     "leave a message",
+    "leave your message",
+    "leave a voicemail",
+    "leave your name and number",
+    "leave your name",
+    "leave your number",
+    "please leave your message",
+    "please leave a message",
     "after the tone",
     "after the beep",
     "at the tone",
+    "at the talent",  # common Whisper mishear of "at the tone"
     "not available",
+    "is not available",
+    "not available to take",
+    "not available to pick",
+    "not available to answer",
+    "unavailable to take",
+    "unavailable to pick",
+    "to pick up your call",
+    "to pick your call",
     "mailbox",
     "your call has been forwarded",
     "please record your message",
+    "record your message",
+    "you've reached",
+    "you have reached",
     "voicemail",
+    "unable to pick",
+    "unable to answer",
+    "unable to take",
+    "can't take your call",
+    "cannot take your call",
+    "cant take your call",
+    "can't come to the phone",
+    "cannot come to the phone",
+    "not able to answer",
+    "not able to take your call",
+    "no one is available",
+    "person you are trying to reach",
+    "the person you called",
 )
+
+# Carrier / Google Voice style: "Telephone number 417… can't take your call"
+_CARRIER_TELEPHONE_NUMBER = (
+    "telephone number",
+    "the number you have dialed",
+    "the number you dialed",
+    "the wireless customer",
+)
+
+# A live person can say this in one short sentence. It is a mailbox only
+# inside a long greeting, or next to a real mailbox phrase.
+CALLBACK_PHRASES = (
+    "i will call you back",
+    "i'll call you back",
+    "i’ll call you back",
+    "call you back",
+)
+
+# A person may still pick up after these. They are not a mailbox.
+SCREENING_PHRASES = (
+    "state your name",
+    "say your name",
+    "record your name",
+    "reason for your call",
+    "reason for calling",
+    "reason of your call",
+    "reason of the call",
+    "reason for the call",
+    "purpose of your call",
+    "purpose of the call",
+    "who's calling",
+    "who is calling",
+    "screening service",
+    "call is being screened",
+    "this call may be screened",
+    "try to connect you",
+    "name and the reason",
+    "name and reason",
+    "tell me the reason",
+    "tell us the reason",
+    "tell the reason",
+)
+
+_CALLBACK_MONOLOGUE_SECONDS = 2.5
+_FREIGHT_SCREENING_DEFAULT = "freight dispatch and load support"
+
+
+def campaign_reason(company_context: str, explicit: str = "") -> str:
+    """One short reason to say when a screener asks who is calling."""
+    text = " ".join((explicit or "").split()).strip()
+    if text and text.lower() != _FREIGHT_SCREENING_DEFAULT:
+        return text.rstrip(".,;")
+    source = " ".join((company_context or "").replace("\n", " ").split()).strip()
+    if not source:
+        return "a quick follow-up"
+    return " ".join(source.split()[:12]).rstrip(".,;")
 
 
 @dataclass(frozen=True)
@@ -82,6 +173,11 @@ class VoicemailDetector:
             factors.append("long scripted greeting")
         if keyword_count > 0:
             factors.append("voicemail keyword")
+        if self.callback_phrase(transcript) and (
+            continuous_greeting_duration_seconds >= _CALLBACK_MONOLOGUE_SECONDS
+            or keyword_count > 0
+        ):
+            factors.append("personal callback greeting")
         if beep_detected or beep_confidence >= 0.6:
             factors.append("beep tone")
         if repeated_machine_pattern:
@@ -92,14 +188,41 @@ class VoicemailDetector:
         confidence = min(1.0, (len(factors) / 2.0) * 0.5)
         if "beep tone" in factors:
             confidence = min(1.0, confidence + 0.35)
-        if "voicemail keyword" in factors:
+        if "voicemail keyword" in factors or "personal callback greeting" in factors:
             confidence = min(1.0, confidence + 0.20)
+
+        # A screener asking for a name is not a mailbox, unless a beep or a
+        # mailbox phrase is already in the same audio.
+        if (
+            self.is_screening_transcript(transcript)
+            and "beep tone" not in factors
+            and "voicemail keyword" not in factors
+        ):
+            return VoicemailDetection(
+                candidate=False,
+                confidence=0.15,
+                factors=["call screening"],
+            )
+
+        # A beep, a mailbox phrase, or an on-screen cue overrides an early "hi".
+        if ("beep tone" in factors) and answer_elapsed_seconds >= 0.3:
+            return VoicemailDetection(candidate=True, confidence=0.95, factors=factors)
+        if ("voicemail keyword" in factors) and answer_elapsed_seconds >= 0.8:
+            return VoicemailDetection(candidate=True, confidence=0.9, factors=factors)
+        if (
+            "personal callback greeting" in factors
+            and answer_elapsed_seconds >= 0.8
+            and continuous_greeting_duration_seconds >= _CALLBACK_MONOLOGUE_SECONDS
+        ):
+            return VoicemailDetection(candidate=True, confidence=0.9, factors=factors)
+        if ("DOM voicemail cue" in factors) and answer_elapsed_seconds >= 0.3:
+            return VoicemailDetection(candidate=True, confidence=0.9, factors=factors)
+
         if human_detected:
-            confidence = min(confidence, 0.35)
+            return VoicemailDetection(candidate=False, confidence=min(confidence, 0.35), factors=factors)
 
         candidate = (
-            answer_elapsed_seconds >= 7.0
-            and not human_detected
+            answer_elapsed_seconds >= 2.5
             and len(factors) >= 2
             and confidence >= 0.75
         )
@@ -108,7 +231,48 @@ class VoicemailDetector:
     @staticmethod
     def keyword_count(text: str) -> int:
         lower = (text or "").lower()
-        return sum(1 for phrase in VOICEMAIL_KEYWORDS if phrase in lower)
+        count = sum(1 for phrase in VOICEMAIL_KEYWORDS if phrase in lower)
+        if VoicemailDetector.is_carrier_mailbox_transcript(lower):
+            count += 1
+        return count
+
+    @staticmethod
+    def is_carrier_mailbox_transcript(text: str) -> bool:
+        """True for carrier prompts like 'Telephone number 417… can't take your call'."""
+        lower = (text or "").lower()
+        if not lower:
+            return False
+        has_number_cue = any(cue in lower for cue in _CARRIER_TELEPHONE_NUMBER)
+        has_digits = bool(_DIGIT_RUN.search(lower))
+        if has_number_cue and has_digits:
+            return True
+        if has_number_cue and any(
+            phrase in lower
+            for phrase in (
+                "can't take",
+                "cannot take",
+                "cant take",
+                "not available",
+                "leave your message",
+                "leave a message",
+                "after the tone",
+                "at the tone",
+            )
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def callback_phrase(text: str) -> bool:
+        lower = (text or "").lower()
+        return any(phrase in lower for phrase in CALLBACK_PHRASES)
+
+    @staticmethod
+    def is_screening_transcript(text: str) -> bool:
+        lower = (text or "").lower()
+        if not lower or VoicemailDetector.keyword_count(lower) > 0:
+            return False
+        return any(phrase in lower for phrase in SCREENING_PHRASES)
 
 # ---------------------------------------------------------------------------
 # Beep frequency range
@@ -338,6 +502,10 @@ class VoicemailAudioClassifier:
     def continuous_greeting_duration_seconds(self) -> float:
         """Longest uninterrupted active-audio run observed in this call."""
         return self._longest_speech_frames * self._frame_ms / 1000.0
+
+    @property
+    def trailing_silence_seconds(self) -> float:
+        return self._silence_frames * self._frame_ms / 1000.0
 
     # ------------------------------------------------------------------ #
     # Internal

@@ -217,16 +217,15 @@ class LocalWhisperSTT:
             audio = np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
         hint = (prompt or "").strip() if self.use_stt_context else ""
         try:
-            segments, _info = self._load().transcribe(
-                audio,
-                language=self.language,
-                vad_filter=True,
-                beam_size=1,
-                temperature=0.0,
-                initial_prompt=hint or None,
-                condition_on_previous_text=False,
-            )
-            transcript = " ".join(segment.text.strip() for segment in segments).strip()
+            # Phone / WASAPI loopback clips often get wiped by Whisper's internal VAD.
+            # Prefer no VAD first, then one VAD retry if the decode looks empty/garbage.
+            transcript = self._decode(audio, hint, vad_filter=False)
+            if not transcript or _is_garbage_transcript(transcript):
+                retry = self._decode(audio, hint, vad_filter=True)
+                if retry and not _is_garbage_transcript(retry):
+                    transcript = retry
+                elif _is_garbage_transcript(transcript):
+                    transcript = ""
         except Exception as exc:
             self.last_empty_reason = f"local whisper failed: {exc}"
             logger.error("Local STT failed: %s", exc)
@@ -234,9 +233,25 @@ class LocalWhisperSTT:
         if _is_low_energy_hallucination(transcript, raw_peak):
             self.last_empty_reason = f"ignored low-energy hallucination ({transcript!r})"
             return ""
+        if _is_garbage_transcript(transcript):
+            self.last_empty_reason = f"ignored garbage transcript ({transcript!r})"
+            return ""
         if not transcript:
             self.last_empty_reason = "local whisper returned no text"
         return transcript
+
+    def _decode(self, audio: np.ndarray, hint: str, *, vad_filter: bool) -> str:
+        segments, _info = self._load().transcribe(
+            audio,
+            language=self.language,
+            vad_filter=vad_filter,
+            beam_size=1,
+            temperature=0.0,
+            initial_prompt=hint or None,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.5,
+        )
+        return " ".join(segment.text.strip() for segment in segments).strip()
 
 
 # ------------------------------------------------------------------ #
@@ -260,6 +275,24 @@ def _is_low_energy_hallucination(transcript: str, peak: float) -> bool:
         return False
     normalized = " ".join(transcript.casefold().split()).strip(" .!?,")
     return normalized in _HALLUCINATIONS
+
+
+def _is_garbage_transcript(transcript: str) -> bool:
+    """Reject Whisper collapses like 'BLEEEEE…' that phone loopback sometimes triggers."""
+    text = " ".join((transcript or "").split()).strip()
+    if not text:
+        return False
+    compact = "".join(ch for ch in text.casefold() if ch.isalnum())
+    if len(compact) >= 12 and len(set(compact)) <= 3:
+        return True
+    if len(text) >= 20:
+        # One character dominates the whole string.
+        counts = {}
+        for ch in compact:
+            counts[ch] = counts.get(ch, 0) + 1
+        if counts and max(counts.values()) / max(len(compact), 1) >= 0.7:
+            return True
+    return False
 
 
 def _float32_to_wav(audio: np.ndarray, samplerate: int) -> bytes:

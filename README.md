@@ -93,22 +93,54 @@ Every operator tab, then the CRM list and a profile with sample records.
 
 ## Core Capabilities
 
-- Browser-based calling automation using Selenium and persistent profiles.
+- Browser-based calling automation using Selenium and persistent Chrome profiles (headless live dials supported).
 - Live call-state detection with conservative ringing, connected, ended, failed, and voicemail transitions.
-- Realtime speech capture with VAD, STT, LLM response generation, and TTS playback.
-- Voicemail detection through DOM cues plus early-call audio classifier diagnostics.
-- Pre-generated opening line and voicemail audio assets before dialing.
-- Call logs, transcripts, recordings, connected-call archive, failed-call archive, and CRM enrichment.
+- Realtime speech capture with VAD, local or Groq STT, local or Groq LLM, and Kokoro/Piper/Edge TTS playback.
+- Safer mailbox vs person gating: beep/keyword hard proof, short human “hello” lock, and saved-greeting fingerprints that cannot drop a live pickup alone.
+- Silent dialing by default with optional **Listen-in** (top bar, Live Run, Audio) so Speakers unmute only when you want to hear both sides; mixed recordings always keep both voices.
+- Auto Windows audio route for VB-CABLE (TTS → CABLE Input, Chrome mic → CABLE Output, capture → Speakers loopback).
+- Live CRM status banners while a call is active, plus call logs, transcripts, recordings, connected-call archive, failed-call archive, and carrier CRM enrichment.
+- Contacts import with MC / legal name / states / address / phone / email columns.
 - FastAPI web console for settings, preflight, audio tools, live runs, logs, recordings, leads, and CRM.
 - Windows EXE build with PyInstaller.
 - Desktop shortcut and Windows Startup shortcut installer.
-- Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, and realtime loop behavior.
+- Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, greeting library, and realtime loop behavior.
 
 ---
 
-## Experimental local Piper TTS
+## Listen-in and recordings
 
-Edge TTS remains the default. To test a local Piper voice without changing the existing call loop, place the Piper `.onnx` model and matching `.onnx.json` file under `models/piper/`, then set:
+Live dials mute Speakers by default so you are not forced to hear both sides all day. Capture and the TTS observer still mix both parties into `logs/recordings/`.
+
+Turn listening on when needed:
+
+- Top bar: **Listen-in: Off/On**
+- Live Run: **Listen to both sides on Speakers**
+- Audio Devices → **Live Listen-In**
+
+```env
+LIVE_LISTEN_ENABLED=false
+CHROME_HEADLESS=true
+STT_BACKEND=local
+LLM_BACKEND=local
+```
+
+`LIVE_LISTEN_ENABLED=true` unmutes Speakers for monitoring. Recordings and STT keep working either way on the supported Realtek/Windows loopback path.
+
+---
+
+## Local voice stack (Kokoro / Piper / Whisper)
+
+Preferred offline path for 24/7 dialing without per-minute API cost:
+
+```env
+TTS_ENGINE=kokoro
+STT_BACKEND=local
+STT_LOCAL_MODEL=base
+LLM_BACKEND=local
+```
+
+Kokoro and Piper stay fully local. Piper example:
 
 ```env
 TTS_ENGINE=piper
@@ -118,7 +150,7 @@ PIPER_NOISE_SCALE=0.667
 PIPER_NOISE_W_SCALE=0.8
 ```
 
-Piper is wired through realtime replies, screening audio, and pre-generated voicemail assets. `PIPER_LENGTH_SCALE` controls speaking pace; the two noise settings control voice and pronunciation variation. Keep them near the defaults until a real voice model has been benchmarked. STT, VAD, LLM responses, playback routing, recording, and the existing voicemail detector remain unchanged. If the model or dependency is missing, startup reports the configuration error explicitly.
+`PIPER_LENGTH_SCALE` controls speaking pace; the noise settings control voice variation. If a model or dependency is missing, startup reports the configuration error explicitly.
 
 ---
 
@@ -131,7 +163,8 @@ The project is designed around those real-world constraints:
 - Never speak until the call is actually connected.
 - Never treat immediate DOM noise as a completed call.
 - Respect a minimum ringing duration.
-- Detect voicemail only after connected/greeting evidence.
+- Detect voicemail only after connected evidence plus beep, mailbox phrase, or other hard proof.
+- Never treat a short live “hello” as a mailbox just because a saved greeting fingerprint is similar.
 - Keep full logs so every call can be audited.
 - Provide preflight checks before live dialing.
 
@@ -139,7 +172,7 @@ The project is designed around those real-world constraints:
 
 ## Current Call-State Safety
 
-The most important production fix is the conservative call-state gate in `src/google_voice.py`.
+The most important production fix is the conservative call-state gate in `src/google_voice.py`, plus the mailbox-vs-person gate in `src/conversation_loop.py`.
 
 Current behavior:
 
@@ -151,6 +184,8 @@ Current behavior:
 - Connected state waits for stable evidence such as answered controls or call timer signals.
 - The AI opening line starts only after confirmed connection.
 - `max_ring_seconds` ends the attempt as no answer only after the configured ring timeout.
+- Short inbound speech bursts lock human pickup before fingerprint matching can race ahead of STT.
+- Saved mailbox greeting fingerprints are a second vote only; beep or mailbox keywords still confirm a drop.
 - Logs include current state, elapsed ringing time, DOM cues, answered controls, call-active status, voicemail cues, audio classifier result, and timeout reason.
 
 ---
@@ -158,15 +193,20 @@ Current behavior:
 ## Architecture
 
 ```text
-GoogleVoiceAgent-Active/
+GoogleVoiceAgent-AMD-Piper/
   src/
     main.py                  CLI runner, safe test, batch calling
     google_voice.py          Selenium Google Voice automation and call-state detection
     call_session.py          Call session model and CallState transitions
     conversation_loop.py     Realtime capture, VAD, STT, LLM, TTS, voicemail handoff
     voicemail_detector.py    Audio classifier for greeting/beep/live-call signals
+    greeting_library.py      Saved mailbox greeting fingerprints (second-vote only)
+    human_detector.py        Short human pickup scoring
+    audio_setup.py           VB-CABLE route + Speakers mute / listen-in
+    live_call_status.py      Realtime CRM/live-run status feed
     ai_groq.py               Groq-backed AI response behavior
-    realtime_tts.py          Edge TTS playback and cache integration
+    local_llm.py             Offline GGUF replies
+    realtime_tts.py          Kokoro / Piper / Edge TTS playback
     audio_capture.py         Input capture and VAD framing
     audio_routing.py         Windows audio-device discovery and playback routing
     crm.py                   Carrier CRM, connected call archive, transcripts, recordings
@@ -181,15 +221,16 @@ GoogleVoiceAgent-Active/
 High-level runtime flow:
 
 1. Load `.env`, `dialer_config.json`, contacts, and CRM data.
-2. Run preflight checks for Groq, Chrome profile, contacts, callback number, and audio devices.
-3. Launch Google Voice with the configured Chrome profile.
-4. Prepare opening line and voicemail audio before dialing.
-5. Dial one contact.
-6. Poll `detect_call_state()` until connected, voicemail, no answer, ended, or failed.
-7. Start the realtime conversation loop only after confirmed connection.
-8. Detect voicemail during the early connected-call window and hand off to voicemail playback when confirmed.
-9. Save call logs, transcript, recording, CRM update, and call archive.
-10. Apply cooldown and continue to the next contact.
+2. Run preflight checks for Chrome profile, contacts, callback number, and audio devices.
+3. Auto-route Windows mic/speakers for VB-CABLE and apply Speakers mute unless listen-in is on.
+4. Launch Google Voice with the configured Chrome profile (headless by default for live dials).
+5. Prepare opening line and voicemail audio before dialing.
+6. Dial one contact.
+7. Poll `detect_call_state()` until connected, voicemail, no answer, ended, or failed.
+8. Start the realtime conversation loop only after confirmed connection.
+9. Lock human pickup on short live speech; drop to voicemail only on beep/keyword or other hard proof.
+10. Save call logs, transcript, recording, CRM update, and call archive.
+11. Apply cooldown and continue to the next contact.
 
 ---
 
@@ -200,9 +241,9 @@ High-level runtime flow:
 | Language | Python |
 | Web console | FastAPI, Jinja2, HTML, CSS, JavaScript |
 | Browser automation | Selenium, webdriver-manager, Google Chrome |
-| AI provider | Groq |
-| Speech/TTS | Groq STT, Edge TTS, pyttsx3 fallback |
-| Audio routing | VB-CABLE, sounddevice, soundcard, soundfile |
+| AI provider | Local GGUF (llama.cpp) and optional Groq |
+| Speech/TTS | Local faster-whisper, Kokoro, Piper, Edge TTS |
+| Audio routing | VB-CABLE, sounddevice, soundcard, soundfile, pycaw listen-in mute |
 | Data | CSV/XLSX contacts, JSON config, local CRM artifacts |
 | Desktop packaging | PyInstaller, PowerShell |
 | CI/testing | pytest, GitHub Actions |
@@ -239,14 +280,14 @@ Then edit `.env` and `dialer_config.json`.
 
 ## How to Install on New PC
 
-Use this when moving **SPECTRUM CODEX** from this laptop to another Windows PC.
+Use this when moving Routelix from this laptop to another Windows PC.
 
 ### 1. Copy the project folder
 
 Copy the full project folder to the new PC, for example:
 
 ```text
-C:\Users\YourName\Downloads\spectrum codex\spectrum codex
+C:\Users\YourName\Downloads\Routelix
 ```
 
 Do not copy only `src/`; keep `requirements.txt`, `setup_project.bat`, `setup_project.ps1`, `data/`, and the launcher files together.
@@ -284,11 +325,17 @@ VB-CABLE still needs manual installation from `https://vb-audio.com/Cable/` if W
 Open `.env` and set at least:
 
 ```env
-GROQ_API_KEY=your_real_groq_key
 CALLBACK_NUMBER=your_google_voice_callback_number
 CONTACTS_FILE=data/contacts.csv
 LOOPBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
+STT_BACKEND=local
+LLM_BACKEND=local
+TTS_ENGINE=kokoro
+LIVE_LISTEN_ENABLED=false
+CHROME_HEADLESS=true
+# Optional cloud fallback:
+# GROQ_API_KEY=your_real_groq_key
 ```
 
 For Google Voice calling, install/configure VB-CABLE and make sure Chrome has permission to use the correct microphone.
@@ -313,7 +360,7 @@ Run tests:
 run_tests.bat
 ```
 
-Run the Spectrum agent directly:
+Run the dialer agent directly:
 
 ```text
 run_agent.bat
@@ -715,7 +762,7 @@ AI speaks before pickup:
 Voicemail triggers too early:
 
 - Confirm voicemail cues are ignored while ringing.
-- Confirm voicemail is only accepted after connected/greeting/beep evidence.
+- Confirm voicemail is only accepted after beep, mailbox keyword, or other hard proof — not a short live hello.
 
 No audio into Google Voice:
 
@@ -748,7 +795,7 @@ Use a number you own or have permission to call:
 6. Confirm the AI speaks only after connection.
 7. Say a short phrase and confirm it responds.
 8. Decline/send one call to voicemail.
-9. Confirm voicemail is detected after greeting or beep.
+9. Confirm a live hello stays connected, and voicemail drops only after beep or mailbox keyword.
 10. Review logs, transcript, recording, and call archive.
 
 ---

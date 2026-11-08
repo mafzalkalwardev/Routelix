@@ -87,9 +87,19 @@ class RealtimeTTS:
             self._piper_noise_w_scale = 0.92
             self._kokoro_voice_name = os.getenv("KOKORO_VOICE", "af_heart")
             try:
-                self._kokoro_speed = float(os.getenv("KOKORO_SPEED", "0.92"))
+                # Slightly under 1.0 = warmer, more human pacing for sales calls
+                self._kokoro_speed = float(os.getenv("KOKORO_SPEED", "0.88"))
             except ValueError:
-                self._kokoro_speed = 0.92
+                self._kokoro_speed = 0.88
+            self._kokoro_speed = _bounded_float(self._kokoro_speed, 0.7, 1.2, "kokoro_speed")
+            try:
+                self._kokoro_sentence_pause = float(os.getenv("KOKORO_SENTENCE_PAUSE", "0.30"))
+            except ValueError:
+                self._kokoro_sentence_pause = 0.30
+            try:
+                self._kokoro_clause_pause = float(os.getenv("KOKORO_CLAUSE_PAUSE", "0.16"))
+            except ValueError:
+                self._kokoro_clause_pause = 0.16
             self._kokoro = _load_kokoro(
                 os.getenv("KOKORO_MODEL_PATH", "models/kokoro/kokoro-v1.0.onnx"),
                 os.getenv("KOKORO_VOICES_PATH", "models/kokoro/voices-v1.0.bin"),
@@ -231,6 +241,8 @@ class RealtimeTTS:
                 self._kokoro,
                 self._kokoro_voice_name,
                 self._kokoro_speed,
+                sentence_pause=getattr(self, "_kokoro_sentence_pause", 0.30),
+                clause_pause=getattr(self, "_kokoro_clause_pause", 0.16),
             )
             self._notify_audio_observer(data, rate)
             _play_numpy_to_device(data, rate, self.device_index)
@@ -465,49 +477,17 @@ def _bounded_float(value: float, minimum: float, maximum: float, name: str) -> f
     return numeric
 
 
-_SPOKEN_NUMBERS = {
-    0: "zero", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
-    6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
-    11: "eleven", 12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
-    16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
-    30: "thirty", 40: "forty", 50: "fifty", 60: "sixty",
-}
-
-
-def _speak_small_number(match) -> str:
-    import re
-
-    raw = match.group(0)
-    if not re.fullmatch(r"\d{1,2}", raw):
-        return raw
-    return _SPOKEN_NUMBERS.get(int(raw), raw)
-
-
 def _prepare_piper_text(text: str) -> str:
-    """Make generated dialogue easier for Piper to deliver naturally."""
-    import re
+    """Make generated dialogue easier for Piper/Kokoro to deliver naturally."""
+    from src.speech_style import humanize_for_speech
 
-    text = _clean_tts_text(text)
-    text = text.replace("—", ", ").replace("–", ", ")
-    text = text.replace("...", ", ")
-    text = re.sub(r"\bLLC\.?", "L.L.C.", text)
-    text = re.sub(r"\bMC\.?", "M.C.", text)
-    text = re.sub(r"\bDOT\.?", "D.O.T.", text)
-    text = re.sub(r"\b\d{1,2}\b", _speak_small_number, text)
-    text = re.sub(r"\s*,\s*", ", ", text)
-    text = re.sub(r",\s*,+", ", ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return humanize_for_speech(text)
 
 
 def _clean_tts_text(text: str) -> str:
-    import re
+    from src.speech_style import clean_tts_text
 
-    cleaned = (text or "").strip()
-    cleaned = re.sub(r"^(?:assistant|agent|tony|routelix)\s*:\s*", "", cleaned, flags=re.I)
-    cleaned = cleaned.replace("**", "").replace("__", "").replace("*", "")
-    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
-        cleaned = cleaned[1:-1].strip()
-    return cleaned
+    return clean_tts_text(text)
 
 
 def _project_path(path: str | Path) -> Path:
@@ -544,19 +524,42 @@ def _load_kokoro(model_path: str | Path, voices_path: str | Path):
         return _KOKORO
 
 
-def _render_kokoro_phrase(text: str, kokoro, voice_name: str, speed: float) -> tuple[np.ndarray, int]:
-    """Kokoro already pauses at sentences and clauses. Keep that, then soften the peaks."""
-    return _kokoro_synthesize(text, kokoro, voice_name, speed)
+def _render_kokoro_phrase(
+    text: str,
+    kokoro,
+    voice_name: str,
+    speed: float,
+    *,
+    sentence_pause: float = 0.30,
+    clause_pause: float = 0.16,
+) -> tuple[np.ndarray, int]:
+    """Kokoro pauses at sentences/clauses; tuned for warm sales delivery."""
+    return _kokoro_synthesize(
+        text,
+        kokoro,
+        voice_name,
+        speed,
+        sentence_pause=sentence_pause,
+        clause_pause=clause_pause,
+    )
 
 
-def _kokoro_synthesize(text: str, kokoro, voice_name: str, speed: float) -> tuple[np.ndarray, int]:
+def _kokoro_synthesize(
+    text: str,
+    kokoro,
+    voice_name: str,
+    speed: float,
+    *,
+    sentence_pause: float = 0.30,
+    clause_pause: float = 0.16,
+) -> tuple[np.ndarray, int]:
     samples, rate = kokoro.create(
         text,
         voice=voice_name,
         speed=speed,
         lang="en-us",
-        sentence_pause=0.22,
-        clause_pause=0.12,
+        sentence_pause=sentence_pause,
+        clause_pause=clause_pause,
     )
     audio = np.asarray(samples, dtype=np.float32).reshape(-1)
     if audio.size == 0:
@@ -803,14 +806,24 @@ def save_tts_wav(
             os.getenv("KOKORO_VOICES_PATH", "models/kokoro/voices-v1.0.bin"),
         )
         try:
-            speed = float(os.getenv("KOKORO_SPEED", "0.92"))
+            speed = float(os.getenv("KOKORO_SPEED", "0.88"))
         except ValueError:
-            speed = 0.92
+            speed = 0.88
+        try:
+            sentence_pause = float(os.getenv("KOKORO_SENTENCE_PAUSE", "0.30"))
+        except ValueError:
+            sentence_pause = 0.30
+        try:
+            clause_pause = float(os.getenv("KOKORO_CLAUSE_PAUSE", "0.16"))
+        except ValueError:
+            clause_pause = 0.16
         data, rate = _render_kokoro_phrase(
             _prepare_piper_text(text),
             kokoro,
             os.getenv("KOKORO_VOICE", "af_heart"),
             speed,
+            sentence_pause=sentence_pause,
+            clause_pause=clause_pause,
         )
         sf.write(str(output_path), data, rate)
         logger.info("Kokoro WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)

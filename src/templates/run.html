@@ -59,6 +59,19 @@
           <label>Capture Device</label>
           <input type="text" id="rCapture" value="{{ cfg.capture_device or 'default' }}" />
         </div>
+        <div class="form-group">
+          <label class="check-row">
+            <input type="checkbox" id="rHeadless" {% if cfg.chrome_headless is not defined or cfg.chrome_headless %}checked{% endif %} />
+            Headless Google Voice (no Chrome window)
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="check-row">
+            <input type="checkbox" id="rListenIn" {% if cfg.live_listen_enabled %}checked{% endif %} onchange="toggleListenIn(this.checked)" />
+            Listen to both sides on Speakers
+          </label>
+          <div class="field-hint">Off by default (silent). Recordings always keep both voices — turn this on only when you want to hear the live call.</div>
+        </div>
       </div>
     </div>
 
@@ -110,6 +123,21 @@
       </button>
     </div>
   </div>
+</div>
+
+<div id="liveCallResultBanner" class="live-call-result-banner" style="display:none">
+  <div>
+    <div class="live-call-result-kicker">Call finished</div>
+    <div class="live-call-result-title" id="liveCallResultTitle">—</div>
+    <div class="live-call-result-detail" id="liveCallResultDetail"></div>
+  </div>
+</div>
+
+<div id="liveCallPanel" class="live-call-panel live-call-panel--hidden">
+  <div class="live-call-panel-label">Realtime call</div>
+  <div class="live-call-phase" id="liveCallPhase">Idle</div>
+  <div class="live-call-who" id="liveCallWho">—</div>
+  <div class="live-call-msg" id="liveCallMsg"></div>
 </div>
 
 <!-- State cards -->
@@ -195,6 +223,8 @@ function buildParams(dryRun) {
     callback_number: document.getElementById('rCallback').value,
     loopback_device: document.getElementById('rLoopback').value,
     capture_device:  document.getElementById('rCapture').value,
+    headless: document.getElementById('rHeadless').checked,
+    live_listen_enabled: document.getElementById('rListenIn').checked,
     dry_run: dryRun,
   };
 }
@@ -207,6 +237,8 @@ function buildSingleParams() {
     callback_number: document.getElementById('rCallback').value,
     loopback_device: document.getElementById('rLoopback').value,
     capture_device: document.getElementById('rCapture').value,
+    headless: document.getElementById('rHeadless').checked,
+    live_listen_enabled: document.getElementById('rListenIn').checked,
     dry_run: document.getElementById('singleDryRun').checked,
   };
 }
@@ -422,6 +454,23 @@ function setRunningUI(running) {
 function clearLog() {
   document.getElementById('liveLog').innerHTML = '<span class="log-idle">Waiting for run…</span>';
   logIndex = 0;
+}
+
+async function toggleListenIn(enabled) {
+  try {
+    const r = await fetch('/api/audio/listen-in', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    const data = await r.json();
+    appendLog('[AUDIO] ' + (data.message || (enabled ? 'Listen-in ON' : 'Listen-in OFF')));
+    if (data.enabled !== undefined) {
+      document.getElementById('rListenIn').checked = !!data.enabled;
+    }
+  } catch (err) {
+    appendLog('[ERROR] Listen-in toggle failed: ' + err.message);
+  }
 }
 
 // On page load: sync UI with current status

@@ -16,6 +16,13 @@ logger = logging.getLogger("GoogleVoiceAgent")
 BASE_DIR = runtime_base()
 INDEX_DB = BASE_DIR / "logs" / "contacts_index.sqlite3"
 
+_EXTRA_COLUMNS = (
+    ("mc_number", "TEXT NOT NULL DEFAULT ''"),
+    ("email", "TEXT NOT NULL DEFAULT ''"),
+    ("states", "TEXT NOT NULL DEFAULT ''"),
+    ("address", "TEXT NOT NULL DEFAULT ''"),
+)
+
 
 def _connect() -> sqlite3.Connection:
     INDEX_DB.parent.mkdir(parents=True, exist_ok=True)
@@ -40,12 +47,24 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             phone TEXT NOT NULL,
             name TEXT NOT NULL,
             phone_norm TEXT NOT NULL,
+            mc_number TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            states TEXT NOT NULL DEFAULT '',
+            address TEXT NOT NULL DEFAULT '',
             search_text TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_contacts_file ON contacts(file_key);
         CREATE INDEX IF NOT EXISTS idx_contacts_search ON contacts(search_text);
         """
     )
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(contacts)").fetchall()
+    }
+    for col, decl in _EXTRA_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {decl}")
+    conn.commit()
 
 
 def _file_key(path: Path) -> str:
@@ -101,11 +120,19 @@ def build_index(path: Path, *, force: bool = False) -> int:
         for r in rows:
             phone = r.get("phone", "")
             name = r.get("name", "") or "Unknown"
+            mc_number = r.get("mc_number", "") or ""
+            email = r.get("email", "") or ""
+            states = r.get("states", "") or ""
+            address = r.get("address", "") or ""
             norm = normalize_phone(phone) or phone
-            search = f"{name} {phone} {norm}".lower()
-            batch.append((key, phone, name, norm, search))
+            search = f"{name} {phone} {norm} {mc_number} {email} {states} {address}".lower()
+            batch.append((key, phone, name, norm, mc_number, email, states, address, search))
         conn.executemany(
-            "INSERT INTO contacts (file_key, phone, name, phone_norm, search_text) VALUES (?,?,?,?,?)",
+            """
+            INSERT INTO contacts (
+                file_key, phone, name, phone_norm, mc_number, email, states, address, search_text
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
             batch,
         )
         conn.execute(
@@ -162,7 +189,7 @@ def query_contacts(
         offset = (page - 1) * per_page
         rows = conn.execute(
             f"""
-            SELECT phone, name FROM contacts
+            SELECT phone, name, mc_number, email, states, address FROM contacts
             WHERE {where}
             ORDER BY id
             LIMIT ? OFFSET ?
@@ -173,7 +200,17 @@ def query_contacts(
     start = offset + 1 if total else 0
     end = min(offset + per_page, total)
     return {
-        "rows": [{"phone": r["phone"], "name": r["name"]} for r in rows],
+        "rows": [
+            {
+                "phone": r["phone"],
+                "name": r["name"],
+                "mc_number": r["mc_number"] or "",
+                "email": r["email"] or "",
+                "states": r["states"] or "",
+                "address": r["address"] or "",
+            }
+            for r in rows
+        ],
         "page": page,
         "per_page": per_page,
         "total": total,

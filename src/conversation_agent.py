@@ -25,6 +25,7 @@ from src.dispatcher_intelligence import (
     DispatcherConversationState,
     build_dynamic_system_prompt,
     build_guardrail_reply,
+    build_instant_sales_reply,
     build_pricing_reply,
     update_state_from_utterance,
 )
@@ -33,6 +34,7 @@ logger = logging.getLogger("GoogleVoiceAgent")
 
 _SYSTEM_TEMPLATE = """\
 You are {agent_name}, a professional freight dispatch sales agent at {company_name}.
+You sound like a sharp, warm US dispatch salesperson on a live outbound call.
 
 Company: {company_name}
 Website: {company_website}
@@ -40,29 +42,38 @@ Callback number: {callback_number}
 
 About us: {company_context}
 
-YOUR GOAL: qualify the carrier and book a 15-minute dispatch onboarding call.
+YOUR GOAL: qualify equipment and lanes, prove they need dedicated dispatch, and CLOSE
+them on THIS call — get a verbal yes to start plus the best email for the carrier packet.
+There is no later appointment. Nobody will call them back. You sell and start them now.
 
 PHONE CALL RULES — follow all of these:
 - You are on a live phone call RIGHT NOW. The prospect just answered.
 - Respond ONLY with what you say aloud — no stage directions, labels, or markdown.
 - Every reply must be 1–2 short sentences (hard limit: 30 words).
 - Sound warm, confident, and genuinely helpful — never scripted or pushy.
-- Ask ONE specific qualifying question per turn (equipment type, lanes, dispatch situation).
-- If they raise an objection, acknowledge briefly, then give ONE concrete value point.
-- If they say they're busy: "No problem — when's a better time to reach you?"
-- If they seem interested: "Great — are you free this week for a quick 15-minute call?"
+- Speak with light emotion: smile on hellos/closes, empathy on objections, energy on the close.
+- Use natural contractions and occasional soft reactions (Sure, Absolutely, Got it) when they fit.
+- Prefer clear spoken paperwork words: M C Authority Letter, W nine, certificate of insurance, L L C.
+- Ask ONE specific qualifying question per turn (equipment, lanes, who books loads, time on boards).
+- If they raise an objection, acknowledge briefly, then give ONE concrete value point and stay on the close.
+- If they say they're busy or driving: keep selling in sixty seconds — ask equipment type, do NOT schedule a callback.
+- If they seem interested: assumptive close — "Let's get you started today. What's the best email for the packet?"
+- Never say "15-minute call", "onboarding later", "I'll have someone call you", or "when should I call back".
 - After 3 consecutive negative responses, thank them politely and signal that you'll let them go.
 - Never guarantee earnings. Never invent company facts.
 
 OBJECTION PLAYBOOK:
 - "Who is this?" -> briefly repeat your name, company, and that you help carriers with dispatch/load support.
 - "How did you get my number?" -> say you are calling publicly available carrier/business contacts and can remove them if they prefer.
-- "Not interested" -> acknowledge, give one short value point, then ask if they want no further calls.
-- "Already have dispatch" -> respect it, ask if they would compare rates or keep a backup dispatcher for tough weeks.
-- "What do you charge?" -> explain pricing depends on setup/equipment and offer a quick onboarding call for exact terms.
+- "Not interested" -> acknowledge, give one short value point, then ask if they want off the list OR to check lane fit now.
+- "Already have dispatch" -> respect it, ask if weak weeks still leave them short — offer backup desk and keep qualifying.
+- "What do you charge?" -> offer TWO options: equipment percent OR $1000/month salary on contract paid the 1st–5th; ask which they prefer.
+- "What services?" -> MAIN only first (load search, rate negotiation, paperwork, tracking — personal dispatch assistant). Go deeper only if they ask.
+- "What is the packet?" -> signup email: agreement/salary contract + they return W nine, M C Authority Letter, certificate of insurance.
 - "Can you guarantee loads/earnings?" -> never guarantee; say results depend on market, lanes, equipment, and availability.
-- "Send info" -> confirm the best email or text number and offer one specific next step.
-- "Busy" -> ask for a better time and end quickly.
+- "Send info" / "call me later" -> take the email NOW and confirm equipment/lanes on this call so the packet is ready.
+- "Busy" / "driving" -> sixty-second qualify (equipment), keep selling; do not book a later call.
+- "I need to think" -> agree briefly, still take email for the packet so they are not starting cold.
 - "Remove me" or "stop calling" -> apologize, confirm you will mark them do-not-call, and end.
 - Hostile or confused prospect -> stay calm, do not argue, end politely."""
 
@@ -71,10 +82,6 @@ _NEGATIVE_SIGNALS = frozenset([
     "do not call", "don't need", "already have", "no thanks",
     "busy right now", "not a good time", "take me off",
 ])
-
-_MAX_TURNS_DEFAULT = 18
-_MAX_TURNS_ENGAGED = 40
-_CONSECUTIVE_NEGATIVES_THRESHOLD = 4  # raised from 3 — carriers often say no 2-3× before engaging
 
 # Trucking-specific terms that indicate a genuine carrier conversation
 _ENGAGEMENT_KEYWORDS = frozenset([
@@ -95,10 +102,11 @@ def _clean_spoken_text(text: str) -> str:
     text = (text or "").strip()
     # Strip common label prefixes the LLM sometimes outputs
     for prefix in (
-        "Tony:", "Agent:", "Assistant:", "[Tony]", "[Agent]",
-        "TONY:", "AGENT:", "AI:", "Bot:", "Tony (agent):",
+        "Tony:", "Ashley:", "Agent:", "Assistant:", "[Tony]", "[Ashley]", "[Agent]",
+        "TONY:", "ASHLEY:", "AGENT:", "AI:", "Bot:", "Tony (agent):", "Ashley (agent):",
         "Dispatch Agent:", "Response:", "Answer:", "Reply:",
-        "Tony (Dispatch Agent):", "Tony from Indus:",
+        "Tony (Dispatch Agent):", "Ashley (Dispatch Agent):",
+        "Tony from Indus:", "Ashley from Indus:",
         "[Dispatch Agent]:", "[Response]:",
     ):
         if text.lower().startswith(prefix.lower()):
@@ -119,11 +127,11 @@ class ConversationAgent:
         self,
         api_key: str,
         model: str = "llama-3.3-70b-versatile",
-        agent_name: str = "Tony",
+        agent_name: str = "Ashley",
         company_name: str = "Indus Transports LLC",
         company_context: str = "",
         company_website: str = "",
-        callback_number: str = "+15551234567",
+        callback_number: str = "+13172100495",
         contact_name: str = "",
         contact_phone: str = "",
         rate_limit_per_minute: int | None = None,
@@ -140,8 +148,10 @@ class ConversationAgent:
         self.model = model
         self.agent_name = agent_name
         self.company_name = company_name
-        self.company_context = company_context or "Freight dispatch services for owner-operators."
-        self.company_website = company_website or ""
+        from src.indus_campaign import COMPANY_CONTEXT as _INDUS_CONTEXT
+
+        self.company_context = company_context or _INDUS_CONTEXT
+        self.company_website = company_website or "https://industransports.com"
         self.callback_number = callback_number
         self.contact_name = contact_name
         self.contact_phone = contact_phone
@@ -162,27 +172,19 @@ class ConversationAgent:
     def opening_line(self) -> str:
         """Generate a short, varied greeting that sounds like a real caller."""
         # Varied openers to avoid sounding scripted on repeated calls
+        from src.opening_pool import random_curated
+
         prompt = (
-            f"Write ONE warm, natural phone greeting for an outbound sales call. "
-            f"You are {self.agent_name} from {self.company_name}. "
-            "Style: casual, conversational, friendly — like a real person calling, not a robot. "
-            f"Campaign context: {self.company_context}. "
-            "The greeting must: (1) say hello warmly, (2) state your name and company briefly, "
-            "(3) add a casual human touch like 'how are things going?' or 'hope your day's going well'. "
-            "Vary the wording each time — do NOT always use the same sentence structure. "
-            "Do not make a claim about the offer before the prospect responds. "
-            "Under 18 words. Return ONLY the greeting text, no quotes, no labels."
+            f"Write ONE warm outbound freight-dispatch sales greeting. "
+            f"You are {self.agent_name}, a sales agent at {self.company_name}. "
+            "Name yourself and the company, then ask if you reached the owner/dispatcher "
+            "or if now is an okay time. Sound confident and human, not robotic. "
+            "Do not pitch loads or pricing yet. Under 22 words. "
+            "Return ONLY the greeting text, no quotes, no labels."
         )
         line = self._raw_complete(prompt, max_tokens=55)
-        # Fallback if LLM returns empty
-        if not line or len(line) < 5:
-            import random
-            fallbacks = [
-                f"Hey, how are you doing? This is {self.agent_name} with {self.company_name}.",
-                f"Hi there — {self.agent_name} here from {self.company_name}, how's it going?",
-                f"Hello, this is {self.agent_name} calling from {self.company_name} — how are you today?",
-            ]
-            line = random.choice(fallbacks)
+        if not line or len(line) < 5 or self.company_name.split()[0].lower() not in line.lower():
+            line = random_curated(self.agent_name, self.company_name)
         return line
 
     def respond_to(self, prospect_text: str) -> str:
@@ -206,20 +208,24 @@ class ConversationAgent:
         reply = (
             build_guardrail_reply(self.state, prospect_text)
             or build_pricing_reply(self.state, prospect_text)
+            or build_instant_sales_reply(
+                self.state,
+                prospect_text,
+                agent_name=self.agent_name,
+                company_name=self.company_name,
+            )
             or self._complete()
         )
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
     def should_end_call(self) -> bool:
-        """True when the agent should politely wrap up the call."""
-        max_turns = _MAX_TURNS_ENGAGED if self._engaged else _MAX_TURNS_DEFAULT
-        return (
-            self.state.interest_level == "DNC"
-            or self._llm_down
-            or self._consecutive_negatives >= _CONSECUTIVE_NEGATIVES_THRESHOLD
-            or self._turn_count > max_turns
-        )
+        """True only when the other person asks not to be called again.
+
+        Turn count, objections, and a missed reply do not hang up. The call
+        stays open until they end it or Google Voice shows it has ended.
+        """
+        return self.state.interest_level == "DNC"
 
     def goodbye_line(self) -> str:
         """Short, warm closing line."""
@@ -293,15 +299,18 @@ class ConversationAgent:
     def _complete(self) -> str:
         self._system = self._build_system_prompt()
         messages = [{"role": "system", "content": self._system}]
-        messages.extend(self._history[-30:])   # long-call memory window plus state summary
+        messages.extend(self._history[-40:])
         # Shorter max_tokens for rushed carriers reduces latency significantly
+        # Keep local replies short so first audio starts sooner on CPU-only laptops.
         if self.state.carrier_style == "rushed":
-            max_tokens = 55
+            max_tokens = 45
         elif self.state.carrier_style in ("skeptical", "neutral"):
-            max_tokens = 90
+            max_tokens = 65
         else:
-            max_tokens = 130
-        temperature = 0.65 if self.state.carrier_style == "skeptical" else 0.75
+            max_tokens = 80
+        temperature = 0.55 if self._backend == "local" else (
+            0.65 if self.state.carrier_style == "skeptical" else 0.75
+        )
         try:
             resp = self._chat_complete_with_backoff(
                 model=self.model,
@@ -335,12 +344,11 @@ class ConversationAgent:
             return ""
 
     def _fallback_when_model_fails(self) -> str:
-        """Ask once, then close. Never repeat the same apology on every turn."""
+        """Ask them to repeat, then keep the call open and try again next turn."""
         self._llm_failures += 1
-        if self._llm_failures >= 2:
-            self._llm_down = True
-            return "The line is rough on my side. I'll follow up later. Have a safe day."
-        return "I missed that last part. Go ahead."
+        if self._llm_failures == 1:
+            return "I missed that last part. Go ahead."
+        return "Still with you. Say that one more time."
 
     def _chat_complete_with_backoff(self, **kwargs):
         delays = (1.0, 2.0, 4.0)

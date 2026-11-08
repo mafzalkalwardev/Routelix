@@ -7,7 +7,7 @@
 <div class="page-header">
   <div class="page-header-left">
     <h2 class="page-title">Contacts</h2>
-    <p class="page-sub">Upload a CSV or XLSX contact list</p>
+    <p class="page-sub">Carrier list with MC Number, Legal Name, States, Address, Phone, and Email</p>
   </div>
 </div>
 
@@ -17,8 +17,9 @@
   </div>
 
   <p class="panel-desc">
-    Required columns: <code>Phone</code> (or Mobile/Number) and <code>Name</code> (or Company/Legal Name).
-    Accepted formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>.
+    Expected columns: <code>MC Number</code>, <code>Legal Name</code>, <code>States</code>,
+    <code>Address</code>, <code>Phone</code>, <code>Email</code>.
+    <code>Phone</code> is required. Accepted formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>.
   </p>
 
   <div class="upload-zone" id="uploadZone"
@@ -40,8 +41,7 @@
   <div id="uploadResult" style="margin-top:1rem"></div>
 </div>
 
-<!-- Current file info -->
-<div class="panel" style="max-width:700px;margin-top:1.5rem">
+<div class="panel" style="margin-top:1.5rem">
   <div class="panel-header">
     <h3 class="panel-title">Current Contacts File</h3>
   </div>
@@ -53,26 +53,84 @@
   <div class="alert alert-error" style="margin-top:1rem">{{ preview.error }}</div>
   {% elif preview.total > 0 %}
   <div class="alert alert-success" style="margin-top:1rem">
-    {{ preview.total }} contacts loaded{% if preview.total > 15 %} — showing first 15{% endif %}
-  </div>
-  <div class="table-wrap" style="margin-top:1rem">
-    <table class="data-table">
-      <thead><tr><th>#</th><th>Name</th><th>Phone</th></tr></thead>
-      <tbody>
-        {% for c in preview.rows %}
-        <tr>
-          <td class="td-mono">{{ loop.index }}</td>
-          <td>{{ c.name }}</td>
-          <td class="td-mono">{{ c.phone }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    {{ preview.total }} contacts loaded
   </div>
   {% else %}
   <div class="empty-state">No contacts loaded. Upload a file above.</div>
   {% endif %}
 </div>
+
+{% if list_error %}
+<div class="alert alert-error" style="margin-top:1rem">{{ list_error }}</div>
+{% endif %}
+
+{% if list_data and list_data.total %}
+<div class="panel" style="margin-top:1.5rem">
+  <div class="panel-header">
+    <h3 class="panel-title">Contact Directory</h3>
+    <form method="get" action="/contacts" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input class="log-filter-input" type="search" name="q" value="{{ query or '' }}" placeholder="Search MC, name, phone, email, state, address…" />
+      <select name="per_page" class="leads-filter-select" onchange="this.form.submit()">
+        {% for n in [25, 50, 100, 200] %}
+        <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }} / page</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-secondary btn-sm" type="submit">Search</button>
+    </form>
+  </div>
+
+  <div class="field-hint" style="margin-bottom:.75rem">
+    Showing {{ list_data.start }}–{{ list_data.end }} of {{ list_data.total }}
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table" id="contactsTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>MC Number</th>
+          <th>Legal Name</th>
+          <th>States</th>
+          <th>Address</th>
+          <th>Phone</th>
+          <th>Email</th>
+          {% if use_call_intelligence %}<th>Status</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in list_data.rows %}
+        <tr>
+          <td class="td-mono">{{ list_data.start + loop.index0 }}</td>
+          <td class="td-mono">{{ c.mc_number or '-' }}</td>
+          <td><strong>{{ c.name or '-' }}</strong></td>
+          <td>{{ c.states or '-' }}</td>
+          <td class="td-notes">{{ c.address or '-' }}</td>
+          <td class="td-mono">{{ c.phone or '-' }}</td>
+          <td>{{ c.email or '-' }}</td>
+          {% if use_call_intelligence %}
+          <td><span class="badge badge--blue">{{ c.intel_label or 'New' }}</span></td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if list_data.pages > 1 %}
+  <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem;flex-wrap:wrap">
+    {% set prev = list_data.page - 1 %}
+    {% set next = list_data.page + 1 %}
+    {% if list_data.page > 1 %}
+    <a class="btn btn-secondary btn-sm" href="/contacts?page={{ prev }}&per_page={{ per_page }}&q={{ query|url_encode }}">Previous</a>
+    {% endif %}
+    <span class="field-hint" style="align-self:center">Page {{ list_data.page }} / {{ list_data.pages }}</span>
+    {% if list_data.page < list_data.pages %}
+    <a class="btn btn-secondary btn-sm" href="/contacts?page={{ next }}&per_page={{ per_page }}&q={{ query|url_encode }}">Next</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -100,7 +158,7 @@ async function uploadFile(file) {
       statusEl.textContent = '';
       resultEl.innerHTML = `<div class="alert alert-success">
         ✓ Uploaded <strong>${file.name}</strong> — ${data.count} contacts.
-        <a href="/contacts">Reload page</a> to see preview.
+        <a href="/contacts">Reload page</a> to see the directory.
       </div>`;
     } else {
       statusEl.textContent = '';

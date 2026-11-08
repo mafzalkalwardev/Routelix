@@ -2,7 +2,12 @@
 
 import numpy as np
 
-from src.voicemail_detector import BeepDetector, VoicemailAudioClassifier, VoicemailDetector
+from src.voicemail_detector import (
+    BeepDetector,
+    VoicemailAudioClassifier,
+    VoicemailDetector,
+    campaign_reason,
+)
 
 
 def test_beep_detector_on_tone():
@@ -33,38 +38,115 @@ def test_silence_label():
     assert label in ("silence", "uncertain", "live_call")
 
 
-def test_multisignal_detector_requires_answer_window_and_two_factors():
+def test_beep_or_mailbox_phrase_is_enough():
     detector = VoicemailDetector()
 
     too_early = detector.classify(
-        answer_elapsed_seconds=6.9,
-        continuous_greeting_duration_seconds=5.0,
+        answer_elapsed_seconds=0.1,
         beep_detected=True,
     )
-    single_signal = detector.classify(
-        answer_elapsed_seconds=8.0,
+    beep = detector.classify(
+        answer_elapsed_seconds=0.4,
         beep_detected=True,
     )
-    confirmed = detector.classify(
-        answer_elapsed_seconds=8.0,
-        continuous_greeting_duration_seconds=5.0,
-        beep_detected=True,
+    phrase = detector.classify(
+        answer_elapsed_seconds=1.0,
+        transcript="Please leave a message after the beep",
     )
 
     assert too_early.candidate is False
-    assert single_signal.candidate is False
-    assert confirmed.candidate is True
-    assert confirmed.confidence >= 0.85
+    assert beep.candidate is True
+    assert beep.confidence >= 0.9
+    assert phrase.candidate is True
 
 
-def test_multisignal_detector_human_evidence_blocks_voicemail():
-    result = VoicemailDetector().classify(
-        transcript="Please leave a message after the beep",
-        answer_elapsed_seconds=10.0,
-        continuous_greeting_duration_seconds=6.0,
+def test_mailbox_phrase_overrides_an_early_hello():
+    overridden = VoicemailDetector().classify(
+        transcript="Hi, you've reached Sam. Please leave a message after the beep",
+        answer_elapsed_seconds=2.0,
         beep_detected=True,
         human_detected=True,
     )
+    hello = VoicemailDetector().classify(
+        transcript="Hello, who is this",
+        answer_elapsed_seconds=1.0,
+        continuous_greeting_duration_seconds=0.8,
+        human_detected=True,
+    )
+
+    assert overridden.candidate is True
+    assert overridden.confidence >= 0.9
+    assert hello.candidate is False
+    assert hello.confidence <= 0.35
+
+
+def test_callback_line_needs_a_long_greeting():
+    short = VoicemailDetector().classify(
+        transcript="I'll call you back",
+        answer_elapsed_seconds=1.2,
+        continuous_greeting_duration_seconds=1.0,
+    )
+    long = VoicemailDetector().classify(
+        transcript="I am unable to pick up. Leave your name and number and I will call you back",
+        answer_elapsed_seconds=3.0,
+        continuous_greeting_duration_seconds=3.2,
+    )
+
+    assert short.candidate is False
+    assert long.candidate is True
+
+
+def test_name_and_reason_prompt_is_not_voicemail():
+    result = VoicemailDetector().classify(
+        transcript="Please state your name and the reason for your call",
+        answer_elapsed_seconds=2.0,
+        continuous_greeting_duration_seconds=3.5,
+    )
 
     assert result.candidate is False
-    assert result.confidence <= 0.35
+    assert "call screening" in result.factors
+
+
+def test_campaign_reason_uses_the_company_not_a_freight_default():
+    reason = campaign_reason(
+        "Routelix helps businesses automate outbound sales calls and follow-up.",
+        "freight dispatch and load support",
+    )
+    assert reason.startswith("Routelix helps businesses")
+    assert "freight" not in reason.lower()
+
+
+def test_dom_cue_confirms_voicemail():
+    result = VoicemailDetector().classify(
+        answer_elapsed_seconds=0.5,
+        dom_voicemail=True,
+    )
+
+    assert result.candidate is True
+    assert "DOM voicemail cue" in result.factors
+
+
+def test_carrier_telephone_number_prompt_is_mailbox():
+    text = "telephone number 4174997435 can't take your call now"
+    assert VoicemailDetector.is_carrier_mailbox_transcript(text)
+    assert VoicemailDetector.keyword_count(text) >= 1
+
+    result = VoicemailDetector().classify(
+        transcript=text,
+        answer_elapsed_seconds=1.0,
+    )
+    assert result.candidate is True
+    assert result.confidence >= 0.9
+
+
+def test_not_available_to_pick_your_call_is_mailbox():
+    text = (
+        "telephone number 4174997435 is not available to pick your call "
+        "please leave your message after the tone"
+    )
+    assert VoicemailDetector.keyword_count(text) >= 2
+    result = VoicemailDetector().classify(
+        transcript=text,
+        answer_elapsed_seconds=1.2,
+    )
+    assert result.candidate is True

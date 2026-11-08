@@ -95,6 +95,19 @@
 </div>
 
 <div class="panel" style="max-width:640px;margin-top:1.5rem">
+  <div class="panel-header"><h3 class="panel-title">Live Listen-In</h3></div>
+  <p class="panel-desc">
+    Live dials stay <strong>silent on Speakers</strong> by default. Both sides are still mixed into
+    <code>logs/recordings</code> and shown under Recordings. Enable listen-in only when you want to hear the call live.
+  </p>
+  <label class="check-row">
+    <input type="checkbox" id="listenInToggle" onchange="toggleListenIn(this.checked)" />
+    Listen to both sides on Speakers
+  </label>
+  <div class="field-hint" id="listenInStatus" style="margin-top:.5rem"></div>
+</div>
+
+<div class="panel" style="max-width:640px;margin-top:1.5rem">
   <div class="panel-header"><h3 class="panel-title">Quick-Set Device Names</h3></div>
   <p class="panel-desc">Type partial names below to update loopback and capture device settings.</p>
   <div class="form-grid">
@@ -173,6 +186,44 @@ async function playLoopbackTest() {
     btn.disabled = false;
   }
 }
+
+async function refreshListenIn() {
+  try {
+    const r = await fetch('/api/audio/listen-in');
+    const data = await r.json();
+    const box = document.getElementById('listenInToggle');
+    if (box) box.checked = !!data.enabled;
+    const status = document.getElementById('listenInStatus');
+    if (status) {
+      status.textContent = data.enabled
+        ? 'Speakers unmuted — you will hear live calls'
+        : 'Speakers muted — silent dialing (recordings still capture both sides)';
+    }
+  } catch (e) {
+    const status = document.getElementById('listenInStatus');
+    if (status) status.textContent = 'Could not read listen-in status';
+  }
+}
+
+async function toggleListenIn(enabled) {
+  const status = document.getElementById('listenInStatus');
+  if (status) status.textContent = 'Updating…';
+  try {
+    const r = await fetch('/api/audio/listen-in', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    const data = await r.json();
+    const box = document.getElementById('listenInToggle');
+    if (box && data.enabled !== undefined) box.checked = !!data.enabled;
+    if (status) status.textContent = data.message || '';
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
+}
+
+refreshListenIn();
 
 async function recordCaptureTest() {
   const btn = document.getElementById('captureTestBtn');

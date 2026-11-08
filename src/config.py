@@ -13,21 +13,37 @@ load_dotenv(BASE_DIR / ".env")
 _DEFAULTS = {
     "contacts_file": str(DATA_DIR / "contacts.xlsx"),
     "profile_name": "sales_profile",
-    "callback_number": "",
-    "agent_name": "Alex",
-    "company_name": "Routelix",
-    "company_website": "",
+    "callback_number": "+13172100495",
+    "agent_name": "Ashley",
+    "company_name": "Indus Transports LLC",
+    "company_website": "https://industransports.com",
     "company_context": (
-        "Routelix helps businesses automate outbound sales campaigns with natural "
-        "voice conversations, lead qualification, appointment setting, voicemail "
-        "handling, CRM updates, and consistent follow-up around the clock."
+        "Indus Transports LLC is a United States freight dispatch company that partners "
+        "with owner-operators and small fleets. We find and negotiate loads, handle broker "
+        "paperwork and rate confirmations, support tracking, and help keep trucks moving "
+        "across all 48 states. We work Dry Van, Reefer, Flatbed, Step Deck, Hotshot, "
+        "Box Truck, Sprinter Van, Power Only, and Car Hauler. On this live call Ashley "
+        "qualifies equipment and lanes, sells dedicated dispatch, and closes the carrier "
+        "to start today — verbal yes plus email for the packet. Never guarantee earnings, "
+        "miles, or freight volume. Never push the deal to a later callback."
+    ),
+    "screening_purpose_text": (
+        "dedicated freight dispatch and load support for owner-operators with Indus Transports"
+    ),
+    "call_objective": (
+        "qualify equipment and lanes, prove they need dedicated dispatch, and close them "
+        "to start on this call — get a verbal yes and the best email for the carrier packet"
+    ),
+    "call_offer": (
+        "dedicated dispatch, high-paying load search, rate negotiation, broker paperwork, "
+        "tracking support, and 24/7 road support across 48 states — carrier approves every load"
     ),
     "groq_model": "llama-3.3-70b-versatile",
     "rotation_minutes": 60,
     "autocut_seconds": 15,
     "loopback_device": "CABLE Input",
     "call_timeout": 60,
-    "call_max_duration": 90,
+    "call_max_duration": 0,
     # Realtime conversation settings
     "capture_device": "default",
     "tts_engine": "edge",
@@ -60,6 +76,12 @@ _DEFAULTS = {
     "stt_retry_count": 2,                 # number of STT retries on empty/failure
     # TTS pre-warming
     "tts_warmup": True,                   # pre-generate common phrases at startup
+    # Before live dials: set Windows mic/speaker + Chrome mic permission automatically
+    "auto_audio_setup": True,
+    # Live Google Voice Chrome window (Connect/Verify stays headed)
+    "chrome_headless": True,
+    # Hear both sides on Speakers while dialing (False = silent; recordings still save both)
+    "live_listen_enabled": False,
 }
 
 
@@ -98,6 +120,18 @@ class Config:
         self.company_context = os.getenv(
             "COMPANY_CONTEXT", j.get("company_context", _DEFAULTS["company_context"])
         )
+        self.screening_purpose_text: str = os.getenv(
+            "SCREENING_PURPOSE_TEXT",
+            str(j.get("screening_purpose_text", _DEFAULTS.get("screening_purpose_text", ""))),
+        ).strip()
+        self.call_objective: str = os.getenv(
+            "CALL_OBJECTIVE",
+            str(j.get("call_objective", _DEFAULTS.get("call_objective", ""))),
+        ).strip()
+        self.call_offer: str = os.getenv(
+            "CALL_OFFER",
+            str(j.get("call_offer", _DEFAULTS.get("call_offer", ""))),
+        ).strip()
         self.groq_api_key: str = os.getenv("GROQ_API_KEY", "")
         self.groq_model: str = os.getenv(
             "GROQ_MODEL", j.get("groq_model", _DEFAULTS["groq_model"])
@@ -228,6 +262,84 @@ class Config:
         self.tts_warmup: bool = os.getenv(
             "TTS_WARMUP", str(j.get("tts_warmup", _DEFAULTS["tts_warmup"]))
         ).lower() not in ("false", "0", "no")
+        self.auto_audio_setup: bool = os.getenv(
+            "AUTO_AUDIO_SETUP",
+            str(j.get("auto_audio_setup", _DEFAULTS["auto_audio_setup"])),
+        ).lower() not in ("false", "0", "no")
+        self.chrome_headless: bool = os.getenv(
+            "CHROME_HEADLESS",
+            str(j.get("chrome_headless", _DEFAULTS["chrome_headless"])),
+        ).lower() not in ("false", "0", "no")
+        self.live_listen_enabled: bool = os.getenv(
+            "LIVE_LISTEN_ENABLED",
+            str(j.get("live_listen_enabled", _DEFAULTS["live_listen_enabled"])),
+        ).lower() in ("true", "1", "yes")
+        self.use_call_intelligence: bool = os.getenv(
+            "USE_CALL_INTELLIGENCE",
+            str(j.get("use_call_intelligence", True)),
+        ).lower() not in ("false", "0", "no")
+        self.silence_does_not_end_call: bool = os.getenv(
+            "SILENCE_DOES_NOT_END_CALL",
+            str(j.get("silence_does_not_end_call", True)),
+        ).lower() not in ("false", "0", "no")
+        self.use_stt_context: bool = os.getenv(
+            "USE_STT_CONTEXT",
+            str(j.get("use_stt_context", True)),
+        ).lower() not in ("false", "0", "no")
+        self.max_silence_seconds: float = float(
+            os.getenv("MAX_SILENCE_SECONDS", j.get("max_silence_seconds", 8.0))
+        )
+        self.listen_after_tts_delay_ms: int = int(
+            os.getenv("LISTEN_AFTER_TTS_DELAY_MS", j.get("listen_after_tts_delay_ms", 250))
+        )
+        self.use_thinking_fillers: bool = os.getenv(
+            "USE_THINKING_FILLERS",
+            str(j.get("use_thinking_fillers", True)),
+        ).lower() not in ("false", "0", "no")
+        self.filler_probability: float = float(
+            os.getenv("FILLER_PROBABILITY", j.get("filler_probability", 0.0))
+        )
+        self.stream_llm_replies: bool = os.getenv(
+            "STREAM_LLM_REPLIES",
+            str(j.get("stream_llm_replies", True)),
+        ).lower() not in ("false", "0", "no")
+        self.voicemail_max_wait_seconds: float = float(
+            os.getenv("VOICEMAIL_MAX_WAIT_SECONDS", j.get("voicemail_max_wait_seconds", 1.2))
+        )
+        self.voicemail_play_after_seconds: float = float(
+            os.getenv("VOICEMAIL_PLAY_AFTER_SECONDS", j.get("voicemail_play_after_seconds", 0.0))
+        )
+        self.voicemail_play_on_greeting: bool = os.getenv(
+            "VOICEMAIL_PLAY_ON_GREETING",
+            str(j.get("voicemail_play_on_greeting", True)),
+        ).lower() not in ("false", "0", "no")
+        self.voicemail_greeting_frames_required: int = int(
+            os.getenv(
+                "VOICEMAIL_GREETING_FRAMES_REQUIRED",
+                j.get("voicemail_greeting_frames_required", 6),
+            )
+        )
+        self.chrome_restart_every_n_calls: int = int(
+            os.getenv("CHROME_RESTART_EVERY_N_CALLS", j.get("chrome_restart_every_n_calls", 0))
+        )
+        self.avoid_gv_page_reload: bool = os.getenv(
+            "AVOID_GV_PAGE_RELOAD",
+            str(j.get("avoid_gv_page_reload", True)),
+        ).lower() not in ("false", "0", "no")
+        self.max_calls_per_run: int = int(
+            os.getenv("MAX_CALLS_PER_RUN", j.get("max_calls_per_run", 0))
+        )
+        self.groq_max_retries_per_minute: int = int(
+            os.getenv("GROQ_MAX_RETRIES_PER_MINUTE", j.get("groq_max_retries_per_minute", 60))
+        )
+        extra_keys = os.getenv("GROQ_API_KEYS", j.get("groq_api_keys", ""))
+        if isinstance(extra_keys, str):
+            parsed_keys = [part.strip() for part in extra_keys.split(",") if part.strip()]
+        else:
+            parsed_keys = [str(part).strip() for part in extra_keys if str(part).strip()]
+        if self.groq_api_key and self.groq_api_key not in parsed_keys:
+            parsed_keys.insert(0, self.groq_api_key)
+        self.groq_api_keys: list[str] = parsed_keys
 
     def validate(self) -> None:
         local_answers = self.llm_backend == "local"

@@ -88,7 +88,8 @@ def test_pricing_response_uses_equipment_rules_without_llm(mock_groq):
     agent.respond_to("I have a sprinter van.")
     reply = agent.respond_to("What do you charge?")
     assert "15%" in reply
-    assert "What percentage were you hoping for?" in reply
+    assert "1000" in reply or "thousand" in reply.lower()
+    assert "Which do you prefer?" in reply
 
 
 def test_interruption_recovery_does_not_call_llm(mock_groq):
@@ -108,6 +109,25 @@ def test_do_not_keep_calling_is_treated_as_dnc(mock_groq):
     reply = agent.respond_to("I'm not interested, please don't keep calling.")
     assert agent.state.interest_level == "DNC"
     assert "do-not-call" in reply
+
+
+def test_instant_playbook_answers_who_is_this_without_llm(mock_groq):
+    _, mock_client = mock_groq
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key", agent_name="Ashley", company_name="Indus Transports LLC")
+    reply = agent.respond_to("Who is this?")
+    assert "Ashley" in reply
+    assert "Indus" in reply
+    mock_client.chat.completions.create.assert_not_called()
+
+
+def test_instant_playbook_handles_whats_this_about(mock_groq):
+    _, mock_client = mock_groq
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    reply = agent.respond_to("What's this about?")
+    assert "dedicated dispatch" in reply.lower()
+    mock_client.chat.completions.create.assert_not_called()
 
 
 def test_should_end_call_false_initially(mock_groq):
@@ -140,14 +160,14 @@ def test_negative_counter_resets_on_positive(mock_groq):
     assert agent._consecutive_negatives == 0
 
 
-def test_should_end_call_after_max_turns(mock_groq):
+def test_long_call_keeps_going_past_the_old_turn_cap(mock_groq):
     _, mock_client = mock_groq
-    mock_client.chat.completions.create.return_value = _make_completion("ok")
+    mock_client.chat.completions.create.return_value = _make_completion("What else should I know?")
     from src.conversation_agent import ConversationAgent
     agent = ConversationAgent(api_key="test_key")
     for _ in range(41):
-        agent.respond_to("Tell me more")
-    assert agent.should_end_call()
+        agent.respond_to("What rates are you seeing?")
+    assert not agent.should_end_call()
 
 
 def test_long_conversation_retains_state_in_prompt(mock_groq):
@@ -157,7 +177,7 @@ def test_long_conversation_retains_state_in_prompt(mock_groq):
     agent = ConversationAgent(api_key="test_key")
     agent.respond_to("I run a dry van, own authority, Midwest to Texas.")
     for i in range(25):
-        agent.respond_to(f"Turn {i}, tell me more.")
+        agent.respond_to(f"Turn {i}, what rates are you seeing out there?")
     last_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
     system_prompt = last_messages[0]["content"]
     assert "Dry Van" in system_prompt
@@ -184,7 +204,8 @@ def test_mock_carrier_conversation_simulation(mock_groq):
     assert snap["local_or_otr"] == "Local"
     assert snap["email"] == "owner@example.com"
     assert "8%" in snap["negotiated_percentage"]
-    assert any("What percentage were you hoping for?" in reply for reply in replies)
+    assert any("Which do you prefer?" in reply for reply in replies)
+    assert any("1000" in reply or "salary" in reply.lower() for reply in replies)
 
 
 def test_goodbye_line_returns_string(mock_groq):
@@ -218,11 +239,12 @@ def test_respond_to_handles_api_error(mock_groq):
     mock_client.chat.completions.create.side_effect = Exception("network error")
     from src.conversation_agent import ConversationAgent
     agent = ConversationAgent(api_key="test_key")
-    first = agent.respond_to("Hello")
-    second = agent.respond_to("I run a dry van.")
+    # Phrases that miss the instant playbook so the LLM path (and fallback) is used.
+    first = agent.respond_to("Hello there friend")
+    second = agent.respond_to("Could you walk me through your full process please?")
     assert first == "I missed that last part. Go ahead."
-    assert second != first
-    assert agent.should_end_call()
+    assert second == "Still with you. Say that one more time."
+    assert not agent.should_end_call()
 
 
 def test_respond_to_retries_rate_limit(mock_groq):

@@ -149,10 +149,14 @@ _SCREENING_PAGE_PHRASES = (
     "screening service",
     "record your name",
     "reason for calling",
+    "reason of your call",
+    "reason of the call",
     "state your name",
     "who's calling",
     "say your name",
     "purpose of your call",
+    "tell the reason",
+    "name and the reason",
 )
 
 _VOICEMAIL_PAGE_PHRASES = [
@@ -287,10 +291,13 @@ class GoogleVoiceBrowser:
         opts.add_argument("--disable-background-timer-throttling")
 
         if self.headless:
+            # Headless live dials still need the real VB-CABLE mic/speaker —
+            # do NOT inject Chrome's fake media devices.
             opts.add_argument("--headless=new")
             opts.add_argument("--disable-gpu")
+            opts.add_argument("--window-size=1280,900")
             opts.add_argument("--use-fake-ui-for-media-stream")
-            opts.add_argument("--use-fake-device-for-media-stream")
+            opts.add_argument("--autoplay-policy=no-user-gesture-required")
 
         self.driver = _create_chrome_driver(opts)
 
@@ -367,6 +374,7 @@ class GoogleVoiceBrowser:
                 deadline = time.time() + timeout
                 email_sent = False
                 password_sent = False
+                verification_logged = False
                 while time.time() < deadline:
                     if self.is_logged_in():
                         from src.gv_accounts import mark_session_ready
@@ -374,8 +382,14 @@ class GoogleVoiceBrowser:
                         return "ready"
                     url = (self.driver.current_url or "").lower()
                     if "challenge" in url or "signin/v2/challenge" in url:
-                        logger.warning("Google verification required for %s; complete it in Chrome", email)
-                        return "verification_required"
+                        if not verification_logged:
+                            logger.warning(
+                                "Google verification required for %s; complete it in the Chrome window",
+                                email,
+                            )
+                            verification_logged = True
+                        time.sleep(1)
+                        continue
                     if not email_sent:
                         fields = self.driver.find_elements(By.CSS_SELECTOR, "input[type='email']")
                         visible = next((el for el in fields if el.is_displayed()), None)
@@ -1158,6 +1172,38 @@ class GoogleVoiceBrowser:
     # Voicemail beep wait
     # ------------------------------------------------------------------
 
+    def voicemail_dom_cue(self) -> bool:
+        """True when the live call panel, not the voicemail inbox, shows a mailbox cue."""
+        return self._voicemail_cue_present() or self._page_contains_voicemail()
+
+    def answered_call_panel_text(self) -> str:
+        """Visible call-panel labels for one log line. Not the whole page."""
+        if not self.driver:
+            return ""
+        labels: list[str] = []
+        try:
+            elements = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "button, [role='dialog'], [aria-label*='call' i]",
+            )
+        except WebDriverException:
+            elements = []
+        for el in elements:
+            try:
+                if not el.is_displayed():
+                    continue
+                label = (el.get_attribute("aria-label") or el.get_attribute("title") or "").strip()
+            except WebDriverException:
+                continue
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= 12:
+                break
+        scoped = self._active_call_dom_text()
+        if scoped and scoped not in " ".join(labels).lower():
+            labels.append(scoped[:240])
+        return " | ".join(labels)[:500]
+
     def is_call_screening_active(self) -> bool:
         """True when Google Voice call screening asks for name/purpose."""
         if not self.driver:
@@ -1175,15 +1221,15 @@ class GoogleVoiceBrowser:
         timeout: float = 25.0,
         poll_interval: float = 0.5,
     ) -> bool:
-        """Poll until real answer evidence appears after screening."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._connected_timer_present() or self._answered_controls_present()[0]:
-                return True
-            if not self.is_call_screening_active() and self._any_present("call_active"):
-                if self._connected_timer_present():
-                    return True
-            time.sleep(poll_interval)
+        """The call timer is already on screen for a mailbox. It is not a person picking up.
+
+        The conversation loop listens for a real voice or a later beep. This
+        does not block that listener, and it does not report a live answer.
+        """
+        del timeout, poll_interval
+        logger.info(
+            "Call screening stays on the audio listener; the call timer is not a pickup"
+        )
         return False
 
     def wait_for_voicemail_ready(
@@ -1197,14 +1243,18 @@ class GoogleVoiceBrowser:
         """
         deadline = time.time() + max_wait
         started = time.time()
+        ready_after = max(0.0, min_ready_after)
         while time.time() < deadline:
+            elapsed = time.time() - started
             if self._voicemail_cue_present() or self._page_contains_voicemail():
-                elapsed = time.time() - started
-                if elapsed >= min(min_ready_after, max_wait * 0.5):
-                    time.sleep(0.6)
+                if elapsed >= ready_after:
+                    time.sleep(0.15)
                     return True
-            time.sleep(0.35)
-        return (time.time() - started) >= min(min_ready_after, 1.0)
+            elif elapsed >= ready_after and ready_after <= 0.5:
+                # Audio detection already decided this is a mailbox.
+                return True
+            time.sleep(0.2)
+        return True
 
     def wait_for_voicemail_beep(self, timeout: float = 8.0) -> bool:
         """Backward-compatible alias for short voicemail-ready wait."""
@@ -1292,21 +1342,44 @@ class GoogleVoiceBrowser:
         CABLE Output as its microphone for voice.google.com — otherwise the call
         hears the laptop mic, not Tony.
         """
+        self.ensure_microphone_device(device_name_hint)
+
+    def ensure_microphone_device(self, device_name_hint: str = "CABLE Output") -> bool:
+        """
+        Verify Chrome can see the VB-CABLE mic and warm getUserMedia with it.
+        Relies on Windows default recording device already being CABLE Output
+        (set by src.audio_setup.ensure_live_call_audio before launch).
+        """
         found, devices = self.check_microphone_device(device_name_hint)
+        if not found:
+            # Permission labels sometimes empty until getUserMedia runs once
+            self._warm_microphone_permission(device_name_hint)
+            found, devices = self.check_microphone_device(device_name_hint)
+
         if found:
-            match = next((d for d in devices if device_name_hint.lower() in d.lower()), device_name_hint)
-            logger.info("Microphone OK: '%s' is available in Chrome as audio input", match)
-            return
+            match = next(
+                (d for d in devices if device_name_hint.lower() in d.lower()),
+                device_name_hint,
+            )
+            warmed = self._warm_microphone_permission(device_name_hint)
+            logger.info(
+                "Microphone OK: '%s' is available in Chrome as audio input (warmed=%s)",
+                match,
+                warmed,
+            )
+            return True
 
         logger.warning(
             "MICROPHONE NOT SET: '%s' not detected as a Chrome audio input.\n"
-            "Tony's TTS audio will NOT reach the Google Voice call.\n"
-            "\nFix (takes ~30 seconds):\n"
-            "  1. In Chrome, click the lock icon to the left of https://voice.google.com\n"
-            "  2. Click Microphone → select '%s'\n"
+            "Ashley TTS audio will NOT reach the Google Voice call.\n"
+            "Auto-setup should have set Windows default mic to CABLE Output.\n"
+            "\nManual fix if needed:\n"
+            "  1. Windows Sound settings → Input → CABLE Output\n"
+            "  2. Chrome lock icon on voice.google.com → Microphone → CABLE Output\n"
             "  3. Reload the Google Voice tab (F5)\n"
             "\nIf '%s' is not in the list, install VB-CABLE: https://vb-audio.com/Cable/",
-            device_name_hint, device_name_hint, device_name_hint,
+            device_name_hint,
+            device_name_hint,
         )
         if devices:
             logger.info("Audio inputs Chrome can currently see: %s", ", ".join(devices))
@@ -1316,6 +1389,42 @@ class GoogleVoiceBrowser:
                 "Possible causes: VB-CABLE not installed, mic permission not yet granted "
                 "for voice.google.com, or page not fully loaded."
             )
+        return False
+
+    def _warm_microphone_permission(self, device_name_hint: str = "CABLE Output") -> bool:
+        """Request a short getUserMedia stream preferring the VB-CABLE input."""
+        if not self.driver:
+            return False
+        hint = (device_name_hint or "CABLE Output").replace("\\", "\\\\").replace("'", "\\'")
+        try:
+            ok = self.driver.execute_async_script(
+                f"""
+                var done = arguments[0];
+                var hint = '{hint}'.toLowerCase();
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+                    done(false);
+                    return;
+                }}
+                navigator.mediaDevices.enumerateDevices().then(function(devs) {{
+                    var cable = devs.find(function(d) {{
+                        return d.kind === 'audioinput' && (d.label || '').toLowerCase().indexOf(hint) >= 0;
+                    }});
+                    var constraints = cable
+                        ? {{ audio: {{ deviceId: {{ ideal: cable.deviceId }} }} }}
+                        : {{ audio: true }};
+                    return navigator.mediaDevices.getUserMedia(constraints);
+                }}).then(function(stream) {{
+                    try {{
+                        stream.getTracks().forEach(function(t) {{ t.stop(); }});
+                    }} catch (e) {{}}
+                    done(true);
+                }}).catch(function() {{ done(false); }});
+                """
+            )
+            return bool(ok)
+        except WebDriverException as exc:
+            logger.debug("Microphone warm-up failed: %s", exc)
+            return False
 
     # ------------------------------------------------------------------
     # Diagnostic snapshot (used by --diagnose-call-state CLI mode)

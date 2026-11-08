@@ -24,6 +24,7 @@ import numpy as np
 from src.audio_capture import AudioCapture
 from src.call_session import CallSession, CallState
 from src.conversation_agent import ConversationAgent
+from src.greeting_library import GreetingLibrary
 from src.hotkey_listener import HotkeyListener
 from src.human_detector import HumanDetector
 from src.paths import runtime_base
@@ -31,13 +32,20 @@ from src.realtime_diagnostics import DIAGNOSTICS_PATH, write_live_diagnostics
 from src.realtime_tts import RealtimeTTS
 from src.stt import GroqWhisperSTT
 from src.vad import EnergyVAD, VADConfig
-from src.voicemail_detector import VoicemailAudioClassifier, VoicemailDetector
+from src.voicemail_detector import (
+    VoicemailAudioClassifier,
+    VoicemailDetector,
+    campaign_reason,
+)
 
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
 _SAMPLERATE = 16000
 _VM_EVIDENCE_MAX_SECONDS = 30.0
+_DEAD_AIR_SECONDS = 4.0
+_SCREENING_LISTEN_SECONDS = 25.0
+_OPENING_MAX_SAMPLES = int(_SAMPLERATE * 3.5)
 _BASE_DIR = runtime_base()
 _SEGMENT_DIR = _BASE_DIR / "logs" / "realtime_segments"
 
@@ -71,7 +79,7 @@ class ConversationLoop:
         wait_for_human_audio: bool = False,
         human_audio_timeout: float = 8.0,
         listen_after_tts_delay_ms: int = 300,
-        min_speech_seconds: float = 0.6,
+        min_speech_seconds: float = 0.4,
         max_silence_seconds: float = 8.0,
         silence_does_not_end_call: bool = True,
         capture_rms_log_interval_seconds: float = 1.0,
@@ -84,6 +92,10 @@ class ConversationLoop:
         stream_llm_replies: bool = True,
         voicemail_play_on_greeting: bool = True,
         voicemail_greeting_frames_required: int = 6,
+        dead_air_seconds: float = _DEAD_AIR_SECONDS,
+        screening_purpose: str = "",
+        screening_already_spoken: bool = False,
+        greeting_library_dir: Optional[Path] = None,
     ):
         self.capture_device_hint = capture_device_hint
         self.tts = tts
@@ -174,6 +186,21 @@ class ConversationLoop:
         self._vm_latest_transcript = ""
         self._vm_human_detected = False
         self._vm_candidate_confirmations = 0
+        self._dead_air_seconds = max(0.5, float(dead_air_seconds))
+        self._screening_purpose = screening_purpose or ""
+        self._screening_already_spoken = bool(screening_already_spoken)
+        self._screening_spoken = False
+        self._screening_needed = False
+        self._screening_cleared = False
+        self._screening_hold_until = 0.0
+        self._no_answer = False
+        self._dom_voicemail = False
+        self._greeting_library = GreetingLibrary(greeting_library_dir)
+        self._opening_frames = []
+        self._opening_samples = 0
+        self._greeting_matched = False
+        self._next_greeting_match = 0.0
+        self._last_inbound_segment = None
 
 
     # ------------------------------------------------------------------ #
@@ -208,6 +235,20 @@ class ConversationLoop:
         self._vm_latest_transcript = ""
         self._vm_human_detected = False
         self._vm_candidate_confirmations = 0
+        self._screening_spoken = False
+        self._screening_needed = False
+        self._screening_cleared = False
+        self._screening_hold_until = 0.0
+        self._no_answer = False
+        self._dom_voicemail = False
+        self._opening_frames = []
+        self._opening_samples = 0
+        self._greeting_matched = False
+        self._next_greeting_match = 0.0
+        self._last_inbound_segment = None
+        if self._screening_already_spoken:
+            self._screening_spoken = True
+            self._screening_hold_until = time.monotonic() + _SCREENING_LISTEN_SECONDS
 
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds
         self._set_state(STATE_WAITING_FOR_ANSWER, "call connected; starting capture before TTS")
@@ -251,18 +292,26 @@ class ConversationLoop:
                 # We wait for inbound human audio evidence (VAD) or an explicit
                 # answered_speak_delay timeout configured by the caller.
                 self._wait_before_opening()
+                self._hold_opening_for_machine_greeting()
+                self._classify_before_opening()
+                self._end_if_dead_air()
 
-            if auto_opening and not self._stop_event.is_set():
-                line = opening_line or self.agent.opening_line()
-                if line:
-                    logger.info("[CALL] Tony opening (after answer): %s", line)
-                    if hasattr(self.tts, "prewarm_line"):
-                        self.tts.prewarm_line(line)
-                    self._write_transcript("Tony", line)
-                    self._play_tts_blocking(line, STATE_SPEAKING_OPENING, "opening")
+            if auto_opening and not self._stop_event.is_set() and not self._no_answer:
+                if self._screening_spoken:
+                    logger.info(
+                        "[CALL] Name and reason already given; waiting for a person or a mailbox"
+                    )
                 else:
-                    logger.warning("[CALL] Opening line empty; entering listening mode")
-                    self._set_state(STATE_LISTENING, "opening line empty")
+                    line = opening_line or self.agent.opening_line()
+                    if line:
+                        logger.info("[CALL] Tony opening (after answer): %s", line)
+                        if hasattr(self.tts, "prewarm_line"):
+                            self.tts.prewarm_line(line)
+                        self._write_transcript("Tony", line)
+                        self._play_tts_blocking(line, STATE_SPEAKING_OPENING, "opening")
+                    else:
+                        logger.warning("[CALL] Opening line empty; entering listening mode")
+                        self._set_state(STATE_LISTENING, "opening line empty")
 
             self._response_active.set()
             if self._state not in (STATE_LISTENING, STATE_SILENCE_TIMEOUT):
@@ -317,6 +366,13 @@ class ConversationLoop:
     def is_stopped(self) -> bool:
         return self._stop_event.is_set()
 
+    def note_dom_voicemail(self) -> None:
+        """The call panel showed a mailbox cue. Audio still has to agree before we drop."""
+        if self._dom_voicemail or self._voicemail_detected:
+            return
+        self._dom_voicemail = True
+        logger.info("[DOM] voicemail cue on the call panel")
+
     def in_takeover(self) -> bool:
         return self._takeover_event.is_set()
 
@@ -333,29 +389,62 @@ class ConversationLoop:
             else:
                 logger.warning("[CALL] VAD calibration timed out; proceeding with opening wait")
 
+            listen_for = self._human_audio_timeout
+            if self._session is not None:
+                listen_for = min(listen_for, self._dead_air_seconds)
             logger.info(
                 "[CALL] Waiting for inbound human audio (timeout=%.1fs)",
-                self._human_audio_timeout,
+                listen_for,
             )
             human_heard = self._wait_stop_or_event(
                 self._answer_confirmed,
-                timeout=self._human_audio_timeout,
+                timeout=listen_for,
             )
             if self._stop_event.is_set():
                 return
             if human_heard:
-                logger.info("[CALL] Human audio confirmed; speaking opening line")
+                logger.info("[CALL] Inbound audio confirmed")
             else:
-                logger.info(
-                    "[CALL] No inbound audio in %.1fs; speaking opening line",
-                    self._human_audio_timeout,
-                )
+                logger.info("[CALL] No inbound audio in %.1fs", listen_for)
         elif self._answered_speak_delay > 0:
             logger.info(
                 "[CALL] Waiting %.1fs before opening line",
                 self._answered_speak_delay,
             )
             self._stop_event.wait(timeout=self._answered_speak_delay)
+
+    def _hold_opening_for_machine_greeting(self) -> None:
+        """A person pauses after hello. A mailbox keeps talking or beeps.
+
+        Skip the sales opening when that pattern shows up, so the drop can
+        start at the tone instead of talking over the greeting. If the answer
+        wait timed out with no inbound audio, speak immediately.
+        """
+        if self._stop_event.is_set() or self._voicemail_detected:
+            return
+        if not self._answer_confirmed.is_set():
+            return
+        deadline = time.monotonic() + 3.2
+        heard_speech = False
+        quiet_since = time.monotonic()
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            detector = self._voicemail_detector
+            if detector.beep_ready:
+                self._confirm_voicemail("beep tone", 0.95)
+                return
+            duration = detector.continuous_greeting_duration_seconds
+            if duration >= 0.2:
+                heard_speech = True
+            if duration >= 2.8 and detector.machine_pattern_detected:
+                self._confirm_voicemail("long scripted greeting", 0.9)
+                return
+            if heard_speech and detector.trailing_silence_seconds >= 0.28:
+                return
+            # The confirm event can fire before the classifier counts a frame.
+            # Give that frame a moment, then treat a still-quiet line as a person.
+            if not heard_speech and time.monotonic() - quiet_since >= 0.45:
+                return
+            time.sleep(0.05)
 
     def _wait_stop_or_event(self, event: threading.Event, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -629,6 +718,7 @@ class ConversationLoop:
             frame = self._capture.read(timeout=0.05) if self._capture else None
             now = time.monotonic()
             if frame is None:
+                self._maybe_end_screening_wait(now)
                 self._maybe_log_silence(now)
                 continue
 
@@ -684,8 +774,24 @@ class ConversationLoop:
                     if label == "voicemail_greeting":
                         self._vm_greeting_hits += 1
                         logger.debug("[VM] Possible voicemail greeting (%d/%d)", self._vm_greeting_hits, self._vm_greeting_frames_required)
+                    elif label == "live_call" and self._last_inbound_segment is not None:
+                        # Short live pickup already heard — do not let fingerprint matching
+                        # override the classifier without a beep/keyword.
+                        if not self._vm_human_detected and not self._voicemail_detected:
+                            self._lock_human_pickup(
+                                "audio classifier live_call after inbound speech",
+                                0.8,
+                            )
                 except Exception as exc:
                     logger.debug("[VM] detection frame error: %s", exc)
+                self._remember_opening_frame(frame)
+                if (
+                    now >= self._next_greeting_match
+                    and not self._vm_human_detected
+                    and self._opening_samples >= int(_SAMPLERATE * 1.6)
+                ):
+                    self._next_greeting_match = now + 0.3
+                    self._maybe_match_greeting()
 
             # Keep evaluating cached evidence after the raw-audio sampling window.
             # A long voicemail greeting may not be transcribed until that window ends.
@@ -717,11 +823,58 @@ class ConversationLoop:
             self._maybe_log_silence(now)
 
     def _evaluate_voicemail_evidence(self, now: float) -> bool:
-        """Apply the Auto Dialer 2-of-5 voicemail gate and stable confirmation."""
-        if self._voicemail_detected or self._vm_human_detected:
+        """Apply the Auto Dialer 2-of-5 voicemail gate and stable confirmation.
+
+        A beep or mailbox phrase still wins even if the greeting started with
+        "hi". A saved-greeting fingerprint alone must never drop a live human —
+        it only counts as supporting evidence with another hard signal.
+        """
+        if self._voicemail_detected:
             return False
 
         answer_elapsed = max(0.0, now - self._vm_answer_started_monotonic)
+        transcript = self._vm_latest_transcript
+        if self._voicemail_detector.beep_ready:
+            return self._confirm_voicemail("beep tone", 0.95)
+        if VoicemailDetector.keyword_count(transcript) > 0:
+            return self._confirm_voicemail("voicemail keyword", 0.9)
+        if getattr(self, "_dom_voicemail", False):
+            return self._confirm_voicemail("DOM voicemail cue", 0.9)
+        if self._maybe_end_screening_wait(now):
+            return True
+        if (
+            VoicemailDetector.is_screening_transcript(transcript)
+            and not getattr(self, "_screening_spoken", False)
+        ):
+            self._screening_needed = True
+            return False
+        if self._vm_human_detected:
+            return False
+        # Fingerprint match is a second vote only — never enough alone, and
+        # never after the audio classifier already called this a live pickup.
+        if getattr(self, "_greeting_matched", False):
+            classifier = (self._last_voicemail_classifier_label or "").strip().lower()
+            hard_support = (
+                self._voicemail_detector.beep_ready
+                or VoicemailDetector.keyword_count(transcript) > 0
+                or getattr(self, "_dom_voicemail", False)
+                or (
+                    self._voicemail_detector.machine_pattern_detected
+                    and self._voicemail_detector.continuous_greeting_duration_seconds >= 2.5
+                )
+                or (
+                    classifier == "voicemail_greeting"
+                    and self._voicemail_detector.continuous_greeting_duration_seconds >= 2.5
+                )
+            )
+            if hard_support:
+                return self._confirm_voicemail("saved greeting + hard signal", 0.92)
+            logger.info(
+                "[VM] saved greeting match held (needs beep/keyword/long machine cue); "
+                "classifier=%s human=%s",
+                classifier or "none",
+                self._vm_human_detected,
+            )
         if answer_elapsed > _VM_EVIDENCE_MAX_SECONDS:
             self._vm_candidate_confirmations = 0
             return False
@@ -739,6 +892,7 @@ class ConversationLoop:
             beep_detected=self._voicemail_detector.beep_ready,
             beep_confidence=1.0 if self._voicemail_detector.beep_ready else 0.0,
             repeated_machine_pattern=machine_pattern,
+            dom_voicemail=getattr(self, "_dom_voicemail", False),
             human_detected=self._vm_human_detected,
         )
 
@@ -756,20 +910,212 @@ class ConversationLoop:
                 ", ".join(result.factors),
             )
 
-        if self._vm_candidate_confirmations < 3:
+        if self._vm_candidate_confirmations < 2:
             return False
+        return self._confirm_voicemail(", ".join(result.factors), result.confidence)
 
+    def _confirm_voicemail(self, reason: str, confidence: float) -> bool:
+        if self._voicemail_detected:
+            return False
         self._voicemail_detected = True
-        reason = "voicemail confirmed: " + ", ".join(result.factors)
-        logger.info("[VM] %s (confidence=%.2f)", reason, result.confidence)
+        self._vm_human_detected = False
+        detail = f"voicemail confirmed: {reason}"
+        logger.info("[VM] %s (confidence=%.2f)", detail, confidence)
+        try:
+            self.tts.stop()
+        except Exception:
+            pass
+        # Only learn greetings from hard mailbox proof — never from fingerprint-only
+        # or polluted short hellos that previously false-triggered.
+        reason_l = (reason or "").lower()
+        if "beep" in reason_l or "keyword" in reason_l:
+            self._save_confirmed_greeting()
         if self._session is not None and not self._session.is_terminal():
             try:
                 self._session.outcome = "voicemail"
-                self._session.transition(CallState.VOICEMAIL, reason)
+                self._session.transition(CallState.VOICEMAIL, detail)
             except ValueError:
                 pass
         self.stop()
         return True
+
+    def _inbound_activity(self) -> bool:
+        detector = self._voicemail_detector
+        if getattr(detector, "beep_ready", False):
+            return True
+        duration = float(getattr(detector, "continuous_greeting_duration_seconds", 0.0) or 0.0)
+        if duration >= 0.2:
+            return True
+        if (self._vm_latest_transcript or "").strip():
+            return True
+        return self._last_inbound_segment is not None
+
+    def _end_if_dead_air(self) -> None:
+        """An answered line that never speaks is not a pitch and not a recording."""
+        if self._session is None or self._stop_event.is_set() or self._voicemail_detected:
+            return
+        if self._screening_spoken or self._inbound_activity():
+            return
+        deadline = self._vm_answer_started_monotonic + self._dead_air_seconds
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            if self._voicemail_detected or self._screening_spoken or self._inbound_activity():
+                return
+            time.sleep(0.05)
+        if (
+            self._stop_event.is_set()
+            or self._voicemail_detected
+            or self._screening_spoken
+            or self._inbound_activity()
+        ):
+            return
+        self._mark_no_answer()
+
+    def _maybe_end_screening_wait(self, now: float) -> bool:
+        if (
+            not getattr(self, "_screening_spoken", False)
+            or getattr(self, "_screening_cleared", False)
+            or self._vm_human_detected
+            or self._voicemail_detected
+        ):
+            return False
+        hold_until = getattr(self, "_screening_hold_until", 0.0)
+        if hold_until and now >= hold_until:
+            logger.info("[CALL] Screening wait ended with no person and no mailbox")
+            self._mark_no_answer()
+            return True
+        return False
+
+    def _mark_no_answer(self) -> None:
+        if self._voicemail_detected or self._no_answer:
+            return
+        self._no_answer = True
+        logger.info("[CALL] No one spoke; hanging up and dialing the next number")
+        if self._session is not None and not self._session.is_terminal():
+            try:
+                self._session.outcome = "no_answer"
+                self._session.transition(CallState.ENDED, "no answer: silent line")
+            except ValueError:
+                pass
+        self.stop()
+
+    def _classify_before_opening(self) -> None:
+        """Read the first thing they say before the sales pitch starts."""
+        if self._session is None or self._stop_event.is_set() or self._voicemail_detected:
+            return
+        if not self._inbound_activity():
+            glance = time.monotonic() + 0.3
+            while time.monotonic() < glance and not self._stop_event.is_set():
+                if self._inbound_activity() or self._voicemail_detected:
+                    break
+                time.sleep(0.05)
+        if not self._inbound_activity() or self._voicemail_detected or self._stop_event.is_set():
+            return
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not self._stop_event.is_set() and not self._voicemail_detected:
+            segment = self._last_inbound_segment
+            if segment is not None:
+                self._transcribe_for_detection(segment)
+                return
+            time.sleep(0.05)
+
+    def _transcribe_for_detection(self, segment: np.ndarray) -> None:
+        if (self._vm_latest_transcript or "").strip() or self._stop_event.is_set():
+            return
+        try:
+            transcript = self.stt.transcribe(
+                segment,
+                samplerate=_SAMPLERATE,
+                prompt=self._stt_prompt,
+            )
+        except Exception as exc:
+            logger.debug("[STT] opening classify failed: %s", exc)
+            return
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return
+        self._vm_latest_transcript = transcript
+        logger.info("[STT] opening_text=%s", transcript)
+        if VoicemailDetector.is_screening_transcript(transcript):
+            self._speak_screening_line()
+            return
+        self._evaluate_voicemail_evidence(time.monotonic())
+
+    def _screening_response_line(self) -> str:
+        agent = getattr(self.agent, "agent_name", "")
+        company = getattr(self.agent, "company_name", "")
+        context = getattr(self.agent, "company_context", "")
+        if not isinstance(agent, str) or not agent.strip():
+            agent = "Alex"
+        if not isinstance(company, str) or not company.strip():
+            company = "our team"
+        if not isinstance(context, str):
+            context = ""
+        purpose = campaign_reason(context, self._screening_purpose)
+        return f"{agent} from {company}, calling about {purpose}."
+
+    def _speak_screening_line(self) -> None:
+        if self._screening_spoken or self._stop_event.is_set() or self._voicemail_detected:
+            return
+        self._screening_spoken = True
+        self._screening_hold_until = time.monotonic() + _SCREENING_LISTEN_SECONDS
+        line = self._screening_response_line()
+        logger.info("[CALL] Screening prompt — saying name and reason, staying on the line")
+        self._write_transcript("Tony", line)
+        self._play_tts_blocking(line, STATE_SPEAKING_OPENING, "screening")
+
+    def _remember_opening_frame(self, frame: np.ndarray) -> None:
+        try:
+            if self.tts.is_speaking():
+                return
+        except Exception:
+            return
+        if self._opening_samples >= _OPENING_MAX_SAMPLES:
+            return
+        chunk = np.asarray(frame, dtype=np.float32).reshape(-1)
+        self._opening_frames.append(chunk.copy())
+        self._opening_samples += int(chunk.size)
+        while self._opening_samples > _OPENING_MAX_SAMPLES and self._opening_frames:
+            dropped = self._opening_frames.pop(0)
+            self._opening_samples -= int(dropped.size)
+
+    def _lock_human_pickup(self, reason: str, confidence: float = 0.85) -> None:
+        """Treat the far side as a live person until a beep/keyword proves otherwise."""
+        if self._voicemail_detected or self._vm_human_detected:
+            return
+        self._vm_human_detected = True
+        self._vm_candidate_confirmations = 0
+        self._greeting_matched = False
+        logger.info(
+            "[VM] Human pickup locked confidence=%.2f reasons=%s",
+            confidence,
+            reason,
+        )
+
+    def _maybe_match_greeting(self) -> None:
+        if (
+            self._greeting_matched
+            or self._voicemail_detected
+            or self._vm_human_detected
+            or self._opening_samples < int(_SAMPLERATE * 1.6)
+        ):
+            return
+        try:
+            audio = np.concatenate(self._opening_frames)
+            if self._greeting_library.matches(audio):
+                self._greeting_matched = True
+                logger.info("[VM] opening matches a saved mailbox greeting")
+        except Exception as exc:
+            logger.debug("[VM] greeting match skipped: %s", exc)
+
+    def _save_confirmed_greeting(self) -> None:
+        library = getattr(self, "_greeting_library", None)
+        frames = getattr(self, "_opening_frames", None) or []
+        if library is None or not frames:
+            return
+        try:
+            library.save(np.concatenate(frames))
+        except Exception as exc:
+            logger.debug("[VM] greeting save skipped: %s", exc)
 
     def _maybe_calibrate(
         self,
@@ -796,6 +1142,7 @@ class ConversationLoop:
             self._write_diagnostics(vad_threshold=new)
 
     def _handle_speech_segment(self, segment: np.ndarray, ended_monotonic: float) -> None:
+        self._last_inbound_segment = np.asarray(segment, dtype=np.float32).reshape(-1).copy()
         duration = len(segment) / float(_SAMPLERATE)
         ended_wall = _wall_ts()
         path = self._write_speech_segment(segment)
@@ -823,6 +1170,20 @@ class ConversationLoop:
             self._set_state(STATE_LISTENING, "short segment dropped")
             return
 
+        # A brief inbound burst right after answer is almost always a live "hello",
+        # not a mailbox monologue. Lock human immediately so fingerprint matching
+        # cannot race ahead of STT (which may be slow or fail).
+        if (
+            not self._response_active.is_set()
+            and not self._voicemail_detected
+            and 0.35 <= duration <= 2.5
+            and not VoicemailDetector.keyword_count(self._vm_latest_transcript)
+        ):
+            self._lock_human_pickup(
+                f"short inbound burst {duration:.2f}s before opening",
+                0.82,
+            )
+
         if self._speech_q.full():
             logger.warning("[VAD] speech queue full; dropping %.2fs segment", duration)
             self._set_state(STATE_LISTENING, "speech queue full")
@@ -836,7 +1197,60 @@ class ConversationLoop:
                 "[VAD] queued %.2fs speech segment for STT after opening completes",
                 duration,
             )
+            # Do not wait for Ashley's opening to finish — mailbox keywords
+            # often arrive in the first greeting while TTS is still speaking.
+            self._kick_early_voicemail_stt(segment)
             self._set_state(STATE_LISTENING, "speech queued until response loop activates")
+
+    def _kick_early_voicemail_stt(self, segment: np.ndarray) -> None:
+        """Transcribe inbound audio during the opening for mailbox/human cues."""
+        if self._voicemail_detected or self._stop_event.is_set():
+            return
+        audio = np.asarray(segment, dtype=np.float32).reshape(-1).copy()
+        worker = threading.Thread(
+            target=self._early_voicemail_stt_worker,
+            args=(audio,),
+            daemon=True,
+            name="EarlyVoicemailSTT",
+        )
+        worker.start()
+
+    def _early_voicemail_stt_worker(self, audio: np.ndarray) -> None:
+        if self._voicemail_detected or self._stop_event.is_set():
+            return
+        try:
+            transcript = (self.stt.transcribe(audio, samplerate=_SAMPLERATE) or "").strip()
+        except Exception as exc:
+            logger.warning("[VM] early STT failed: %s", exc)
+            return
+        if not transcript or self._voicemail_detected or self._stop_event.is_set():
+            return
+        if self._is_tony_echo_transcript(transcript):
+            return
+        logger.info("[VM] early STT during opening: %s", transcript)
+        self._vm_latest_transcript = transcript
+        duration = len(audio) / float(_SAMPLERATE)
+        if VoicemailDetector.keyword_count(transcript) > 0:
+            self._write_transcript("Prospect", transcript)
+            self._evaluate_voicemail_evidence(time.monotonic())
+            return
+        if VoicemailDetector.is_screening_transcript(transcript):
+            self._speak_screening_line()
+            return
+        human = self._human_detector.classify(
+            transcript=transcript,
+            speech_duration_seconds=duration,
+            answer_elapsed_seconds=max(
+                0.0, time.monotonic() - self._vm_answer_started_monotonic
+            ),
+            has_speech_like=True,
+        )
+        if human.detected:
+            self._write_transcript("Prospect", transcript)
+            self._lock_human_pickup(
+                ", ".join(human.reasons) or "early human transcript",
+                human.confidence,
+            )
 
     def _log_rms_if_due(self, now: float, rms: float, threshold: float) -> None:
         if now < self._next_rms_log:
@@ -987,13 +1401,24 @@ class ConversationLoop:
             self._write_transcript("Prospect", transcript)
 
             answer_elapsed = max(0.0, time.monotonic() - self._vm_answer_started_monotonic)
+            self._vm_latest_transcript = transcript
+            if VoicemailDetector.is_screening_transcript(transcript):
+                if not self._screening_spoken:
+                    self._speak_screening_line()
+                logger.info("[CALL] Screening prompt kept on the line; not a mailbox")
+                self._set_state(STATE_LISTENING, "waiting after screening")
+                return
+            self._screening_cleared = True
+            if self._evaluate_voicemail_evidence(time.monotonic()):
+                return
+
             human = self._human_detector.classify(
                 transcript=transcript,
                 speech_duration_seconds=duration,
                 answer_elapsed_seconds=answer_elapsed,
                 has_speech_like=True,
             )
-            if human.detected:
+            if human.detected and not self._screening_spoken:
                 self._vm_human_detected = True
                 self._vm_candidate_confirmations = 0
                 logger.info(
@@ -1001,9 +1426,8 @@ class ConversationLoop:
                     human.confidence,
                     ", ".join(human.reasons),
                 )
-            self._vm_latest_transcript = transcript
-            if self._evaluate_voicemail_evidence(time.monotonic()):
-                return
+            elif human.detected and self._screening_spoken:
+                logger.info("[CALL] Person spoke after screening; continuing the sale")
 
             self._set_state(STATE_THINKING, "generating LLM reply")
             if self._stream_llm_replies and hasattr(self.agent, "respond_to_streaming"):
