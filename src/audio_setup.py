@@ -112,11 +112,14 @@ def _name_score(name: str, hint: str) -> int:
         return -1
     # VB-CABLE often exposes interface name "VB-Audio Virtual Cable" plus
     # endpoint label "CABLE Output" / "CABLE Input" in the combined name.
-    if "cable" in h and "vb-audio" in n and "cable" in n:
+    if "cable" in h and ("vb-audio" in n or "vb audio" in n or "cable" in n):
         if "output" in h and "output" in n:
             return 90
-        if "input" in h and "input" in n:
+        # "CABLE Input", "CABLE In 16 Ch", or Speakers|VB-Audio render endpoint
+        if "input" in h and ("input" in n or re.search(r"\bin\b", n)):
             return 90
+        if "input" in h and "speakers" in n and ("vb-audio" in n or "vb audio" in n):
+            return 85
         # Capture flow + generic VB-Audio name still counts as cable output mic
         if "output" in h and "output" not in n and "input" not in n:
             return 70

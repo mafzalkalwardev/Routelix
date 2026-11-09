@@ -54,18 +54,83 @@ def describe_audio_device(device_index: int) -> str:
         return f"[{device_index}] <unavailable: {exc}>"
 
 
+def _loopback_match_score(device_name: str, name_hint: str, max_output_channels: int) -> int:
+    """
+    Score how well a PortAudio output device matches the configured loopback hint.
+
+    VB-CABLE renames itself across installs / Windows builds:
+      "CABLE Input (VB-Audio Virtual Cable)"
+      "CABLE In 16 Ch (2- VB-Audio Virtual Cable)"
+      "Speakers (VB-Audio Virtual Cable)"   ← still the cable playback endpoint
+    A plain substring check for "CABLE Input" misses the "CABLE In …" form.
+    """
+    if max_output_channels <= 0:
+        return -1
+    name = (device_name or "").lower()
+    hint = (name_hint or "").strip().lower()
+    if not hint:
+        return -1
+    if hint in name:
+        score = 100
+        if "point" in name:
+            score -= 15
+        return score
+
+    # "CABLE Output" is the mic side — never alias it to a playback device.
+    if "output" in hint and "input" not in hint and " in " not in f" {hint} ":
+        return -1
+
+    wants_cable = "cable" in hint or "vb-audio" in hint or "vb audio" in hint
+    if not wants_cable:
+        return -1
+
+    is_vb = "vb-audio" in name or "vb audio" in name or "cable" in name
+    if not is_vb:
+        return -1
+    # Never treat the mic-side endpoint as TTS output.
+    if "cable output" in name or name.startswith("cable output"):
+        return -1
+
+    if "cable in" in name or "cable input" in name:
+        score = 95
+    elif "speakers" in name and ("vb-audio" in name or "vb audio" in name):
+        score = 80
+    elif "output" in name and ("vb-audio" in name or "vb audio" in name) and "cable output" not in name:
+        # WDM-KS "Output (VB-Audio Point)" style render endpoint
+        score = 70
+    else:
+        return -1
+    if "point" in name:
+        score -= 10
+    if "16ch" in name.replace(" ", "") or "16 ch" in name:
+        score -= 5
+    return score
+
+
 def find_loopback_devices(name_hint: str = "CABLE Input") -> list[int]:
-    """Return all output device indexes matching name_hint, in discovery order."""
-    matches = []
+    """Return playable-output device indexes matching name_hint, best match first."""
+    scored: list[tuple[int, int]] = []
     for dev in list_audio_devices():
-        if name_hint.lower() in dev["name"].lower() and dev["max_output_channels"] > 0:
-            matches.append(dev["index"])
-            logger.debug("Loopback device candidate: [%d] %s", dev["index"], dev["name"])
-    return matches
+        score = _loopback_match_score(
+            str(dev.get("name") or ""),
+            name_hint,
+            int(dev.get("max_output_channels") or 0),
+        )
+        if score < 0:
+            continue
+        scored.append((score, int(dev["index"])))
+        logger.debug(
+            "Loopback device candidate score=%d: [%d] %s",
+            score,
+            dev["index"],
+            dev["name"],
+        )
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [index for _score, index in scored]
 
 
 def find_loopback_device(name_hint: str = "CABLE Input") -> Optional[int]:
-    """Return the first matching output device index, or None."""
+    """Return the best matching output device index, or None."""
     matches = find_loopback_devices(name_hint)
     if matches:
         return matches[0]

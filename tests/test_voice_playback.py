@@ -59,6 +59,22 @@ def test_find_loopback_devices_returns_all_matches():
     assert indexes == [1, 4]
 
 
+def test_find_loopback_accepts_cable_in_16ch_alias():
+    devices = [
+        {"index": 0, "name": "Speakers (Realtek(R) Audio)", "max_input_channels": 0,
+         "max_output_channels": 2, "default_samplerate": 48000},
+        {"index": 1, "name": "CABLE In 16 Ch (2- VB-Audio Virtual Cable)",
+         "max_input_channels": 0, "max_output_channels": 16, "default_samplerate": 44100},
+        {"index": 2, "name": "CABLE Output (2- VB-Audio Virtual Cable)",
+         "max_input_channels": 16, "max_output_channels": 0, "default_samplerate": 44100},
+        {"index": 3, "name": "Speakers (2- VB-Audio Virtual Cable)",
+         "max_input_channels": 0, "max_output_channels": 16, "default_samplerate": 44100},
+    ]
+    with patch("src.voice_playback.list_audio_devices", return_value=devices):
+        assert find_loopback_device("CABLE Input") == 1
+        assert find_loopback_devices("CABLE Input")[0] == 1
+
+
 def test_find_loopback_device_case_insensitive():
     with patch("src.voice_playback.list_audio_devices", return_value=_fake_device_list()):
         idx = find_loopback_device("cable input")

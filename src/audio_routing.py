@@ -19,6 +19,16 @@ def paired_capture_hint(loopback_hint: str | None) -> str:
     hint = (loopback_hint or "").strip()
     if not hint:
         return ""
+    lowered = hint.lower()
+    # VB-CABLE playback may be labeled "CABLE Input", "CABLE In 16 Ch", or
+    # "Speakers (VB-Audio Virtual Cable)" — Chrome still reads CABLE Output.
+    if "cable" in lowered or "vb-audio" in lowered or "vb audio" in lowered:
+        if (
+            "input" in lowered
+            or re.search(r"\bin\b", lowered)
+            or ("speakers" in lowered and "vb" in lowered)
+        ):
+            return "CABLE Output"
     return re.sub("input", "Output", hint, flags=re.IGNORECASE)
 
 

@@ -1836,6 +1836,17 @@ def main() -> None:
             ", ".join(row["email"] for row in enabled_accounts),
         )
 
+    # Auto-route Windows mic/speakers first, then resolve PortAudio cable names.
+    # VB-CABLE often renames itself ("CABLE Input" → "CABLE In 16 Ch"); setup alone
+    # cannot invent a missing driver, but matching must tolerate those aliases.
+    if not args.dry_run:
+        capture_device = _prepare_live_call_audio(
+            cfg,
+            loopback_device=loopback_device,
+            capture_device=capture_device,
+            profile_name=profile_name,
+        )
+
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
     requested_slots = len(enabled_accounts) if enabled_accounts else int(cfg.n_slots)
@@ -1850,7 +1861,7 @@ def main() -> None:
         raise SystemExit(
             "Live calling needs an output loopback device so TTS reaches Google Voice. "
             "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "
-            "playback cable input."
+            "playback cable input (also accepts 'CABLE In 16 Ch' / VB-Audio Speakers)."
         )
 
     if args.dry_run:
@@ -1896,14 +1907,6 @@ def main() -> None:
 
     browser_holder: list = []
     _install_shutdown_handlers(browser_holder)
-
-    # Windows mic → CABLE Output, speakers → Realtek, Chrome mic prefs — before Chrome opens
-    capture_device = _prepare_live_call_audio(
-        cfg,
-        loopback_device=loopback_device,
-        capture_device=capture_device,
-        profile_name=profile_name,
-    )
 
     shared_call_kwargs = dict(
         objective=objective,
