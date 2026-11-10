@@ -214,10 +214,11 @@ def test_run_all_returns_nine_results(monkeypatch):
          patch("src.preflight.check_capture_device") as ccap, \
          patch("src.preflight.check_piper_voice") as cpiper, \
          patch("src.preflight.check_local_models") as clocal, \
+         patch("src.preflight.check_auto_audio_route") as car, \
          patch("src.preflight.check_callback_number") as cn:
         from src.preflight import CheckResult
-        for mock in (ce, cg, cc, cp, ca, ccap, cpiper, clocal, cn):
+        for mock in (ce, cg, cc, cp, ca, ccap, car, cpiper, clocal, cn):
             mock.return_value = CheckResult("X", "ok", "ok")
         from src.preflight import run_all
         results = run_all()
-        assert len(results) == 9
+        assert len(results) == 10

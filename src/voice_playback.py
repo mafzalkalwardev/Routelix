@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -356,6 +357,13 @@ def _play_default_output(wav_path: str | Path) -> float:
         return _play_ffplay_fallback(wav_path)
 
 
+def _pulse_sink_hint(device_hint: str) -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    hint = (device_hint or "").strip().lower()
+    return hint.startswith("routelix_")
+
+
 def play_wav_loopback(
     wav_path: str | Path,
     device_hint: str = "CABLE Input",
@@ -363,7 +371,16 @@ def play_wav_loopback(
 ) -> float:
     """
     Play a WAV file to the virtual loopback cable so it appears as mic input.
+    On Linux, hints that start with routelix_ are Pulse/PipeWire sink names.
     """
+    if _pulse_sink_hint(device_hint):
+        from src.linux_audio import play_wav_to_pulse_sink
+
+        sink = device_hint.strip()
+        if sink.endswith(".monitor"):
+            sink = sink[: -len(".monitor")]
+        return play_wav_to_pulse_sink(wav_path, sink)
+
     errors = []
     for device_index in find_loopback_devices(device_hint):
         try:

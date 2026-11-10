@@ -52,6 +52,7 @@ def test_ensure_live_call_audio_sets_devices_and_capture_default(tmp_path: Path)
         set_calls.append(device_id)
 
     with (
+        patch("src.audio_setup.sys.platform", "win32"),
         patch("src.audio_setup.resolve_live_route", return_value=("CABLE Input", "default", mic, speaker)),
         patch("src.audio_setup.set_windows_default_device", side_effect=fake_set),
     ):

@@ -7,6 +7,37 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class _AuthedClient:
+    """Test client that sends the session CSRF token on unsafe methods."""
+
+    def __init__(self, raw, csrf: str):
+        self._raw = raw
+        self.csrf = csrf
+
+    def _headers(self, headers):
+        merged = dict(headers or {})
+        merged.setdefault("X-CSRF-Token", self.csrf)
+        return merged
+
+    def get(self, *args, **kwargs):
+        return self._raw.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        kwargs["headers"] = self._headers(kwargs.get("headers"))
+        return self._raw.post(*args, **kwargs)
+
+    def patch(self, *args, **kwargs):
+        kwargs["headers"] = self._headers(kwargs.get("headers"))
+        return self._raw.patch(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        kwargs["headers"] = self._headers(kwargs.get("headers"))
+        return self._raw.delete(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
     """Build a TestClient with isolated tmp dirs for logs/data."""
@@ -22,14 +53,27 @@ def client(tmp_path_factory):
          patch("src.web_app.CONFIG_FILE", tmp / "dialer_config.json"), \
          patch("src.web_app.DATA_DIR", data_dir):
         from fastapi.testclient import TestClient
+        from src.auth import ensure_bootstrap_admin, reset_rate_limits
         from src.web_app import app
-        yield TestClient(app)
+
+        reset_rate_limits()
+        ensure_bootstrap_admin()
+        raw = TestClient(app)
+        login = raw.post(
+            "/login",
+            data={"username": "admin", "password": "test-password-123", "next": "/dashboard"},
+            follow_redirects=False,
+        )
+        assert login.status_code == 303, login.text
+        csrf = raw.cookies.get("routelix_csrf")
+        assert csrf
+        yield _AuthedClient(raw, csrf)
 
 
 # ── Page routes return 200 ────────────────────────────────────────────────────
 
 def test_dashboard_loads(client):
-    r = client.get("/")
+    r = client.get("/dashboard")
     assert r.status_code == 200
     assert "ROUTELIX" in r.text
     assert "/static/routelix-mark.svg" in r.text
@@ -112,7 +156,7 @@ def test_carrier_profile_page_loads(client):
 # ── Branding present ──────────────────────────────────────────────────────────
 
 def test_branding_in_all_pages(client):
-    pages = ["/", "/preflight", "/settings", "/contacts", "/run", "/logs"]
+    pages = ["/dashboard", "/preflight", "/settings", "/contacts", "/run", "/logs"]
     for url in pages:
         with patch("src.voice_playback.list_audio_devices", return_value=[]):
             r = client.get(url)

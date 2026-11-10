@@ -1,0 +1,111 @@
+# Routelix on Ubuntu 24.04 (aarch64 or amd64)
+
+The public site is [https://routelix.induswebagency.com](https://routelix.induswebagency.com). nginx terminates TLS and proxies to the app on `127.0.0.1:8787`. Ports 1080, 5001, 9222, 12525, and 27017 are left alone.
+
+Google Chrome has no Linux arm64 build. The installer uses Chromium from the xtradeb PPA or Playwright's Chromium, plus chromedriver. It does not use the snap.
+
+## 1. DNS and the checkout
+
+Point `routelix.induswebagency.com` at the VPS, then:
+
+```bash
+sudo mkdir -p /opt/routelix
+sudo chown "$USER" /opt/routelix
+git clone <this-repo> /opt/routelix
+cd /opt/routelix
+sudo bash deploy/linux/install.sh
+```
+
+`install.sh` installs apt packages, creates the `routelix` user, builds `.venv` from `requirements-linux.txt`, downloads the Piper lessac voice, the faster-whisper `base` model (int8 at runtime), and a Qwen2.5 1.5B Q4 GGUF. Skip the GGUF with `sudo SKIP_LLM_DOWNLOAD=1 bash deploy/linux/install.sh` if you will use Groq for answers.
+
+Kokoro is supported (`TTS_ENGINE=kokoro`) but the ONNX files are not downloaded automatically. Place them at the paths in `.env`.
+
+## 2. Environment
+
+```bash
+sudoedit /opt/routelix/.env
+```
+
+Set at least:
+
+- `ROUTELIX_SECRET_KEY` (install.sh fills a random value when it creates the file)
+- `ROUTELIX_ADMIN_PASSWORD` (10 characters or more)
+- `CALLBACK_NUMBER`
+- `GROQ_API_KEY` only if you want cloud speech or answers. Then set `STT_BACKEND=groq` and/or `LLM_BACKEND=groq`. With the key empty, keep `STT_BACKEND=local` and `LLM_BACKEND=local`.
+
+Every variable is listed in `deploy/linux/.env.example`.
+
+## 3. Services
+
+```bash
+sudo systemctl restart routelix-audio routelix
+sudo systemctl status routelix --no-pager
+curl -fsS http://127.0.0.1:8787/healthz
+```
+
+`routelix.service` sets `MemoryMax=8G`, `Restart=always`, and listens on `127.0.0.1:8787`. `routelix-audio.service` runs PipeWire (or PulseAudio) as the `routelix` user so Chromium and the dialer share `/run/routelix`.
+
+## 4. nginx and the certificate
+
+```bash
+sudo cp /opt/routelix/deploy/linux/nginx/routelix-upgrade.conf /etc/nginx/conf.d/routelix-upgrade.conf
+sudo cp /opt/routelix/deploy/linux/nginx/routelix.conf /etc/nginx/sites-available/routelix
+sudo ln -sfn /etc/nginx/sites-available/routelix /etc/nginx/sites-enabled/routelix
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d routelix.induswebagency.com
+```
+
+Certbot adds the TLS server block. The upgrade map is there for WebSockets. The live run uses server-sent events (`/api/run/stream`); the site config turns proxy buffering off for that stream.
+
+Open `https://routelix.induswebagency.com/`, then log in at `/login`.
+
+## 5. Google Voice sign-in (manual, once per profile)
+
+Headless Chromium cannot finish a Google password, 2FA, or robot check. Two supported options:
+
+**Interactive noVNC, localhost only**
+
+```bash
+sudo systemctl start routelix-audio
+sudo -u routelix bash /opt/routelix/deploy/linux/gv-login.sh sales_profile
+```
+
+From your laptop:
+
+```bash
+ssh -L 6080:127.0.0.1:6080 <user>@<server>
+```
+
+Open `http://127.0.0.1:6080/vnc.html`, sign in at voice.google.com, and confirm the dial pad is visible. Stop the headed Chromium. Later live runs reuse `chrome_profiles/sales_profile` with `CHROME_HEADLESS=true`.
+
+**Copy a profile that is already signed in**
+
+On a machine where Chromium is already logged into Google Voice, copy that user-data directory to the server and:
+
+```bash
+sudo -u routelix /opt/routelix/.venv/bin/python -m src.gv_session import-profile \
+  --from /path/to/chromium-user-data --name sales_profile
+```
+
+A JSON cookie export is only a best-effort staging file:
+
+```bash
+sudo -u routelix /opt/routelix/.venv/bin/python -m src.gv_session import-cookies \
+  --from cookies.json --name sales_profile
+```
+
+Google often rejects imported session cookies. If the dial pad does not appear, use noVNC.
+
+## 6. Call audio
+
+Before the first live run the process creates two null sinks:
+
+- `routelix_to_gv` — Piper/Kokoro/Edge playback. Chromium's microphone is `routelix_to_gv.monitor`.
+- `routelix_from_gv` — Chromium's speaker. Speech-to-text records `routelix_from_gv.monitor`.
+
+Run Preflight, then Audio → test TTS and test capture, before a campaign. A VPS has no room speakers. Listen-in cannot play into a physical speaker unless the machine has one; use the Recordings tab. If Chromium does not attach to the sinks, the call will be one-way or silent even though the console is up. That is a browser/Pulse limitation, not something the installer can guarantee.
+
+## 7. Operators
+
+The admin created from `ROUTELIX_ADMIN_PASSWORD` opens **Users** and adds operator accounts. Passwords are PBKDF2-SHA256 hashes in `data/users.json`. Login attempts are limited to 8 failures per 15 minutes per IP in this process.

@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from urllib.parse import quote as _url_quote
+from urllib.parse import parse_qs, quote as _url_quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -31,6 +31,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -71,6 +72,177 @@ _account_connect_lock = threading.Lock()
 # Custom Jinja2 filters
 templates.env.filters["basename"] = lambda p: Path(str(p or "")).name
 templates.env.filters["url_encode"] = lambda v: _url_quote(str(v or ""), safe="")
+
+
+def _jinja_csrf(request: Request) -> str:
+    try:
+        return str(request.session.get("csrf") or "")
+    except Exception:
+        return ""
+
+
+def _jinja_user(request: Request):
+    return getattr(getattr(request, "state", None), "user", None)
+
+
+templates.env.globals["csrf_token"] = _jinja_csrf
+templates.env.globals["current_user"] = _jinja_user
+
+
+def _normalize_path(path: str) -> str:
+    if path != "/" and path.endswith("/"):
+        return path.rstrip("/") or "/"
+    return path or "/"
+
+
+_PUBLIC_GET = {
+    "/",
+    "/login",
+    "/healthz",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/llms.txt",
+    "/llms-full.txt",
+    "/favicon.ico",
+    "/site.webmanifest",
+    "/manifest.webmanifest",
+}
+
+
+def _is_public(path: str, method: str) -> bool:
+    path = _normalize_path(path)
+    if method in {"GET", "HEAD"} and (path in _PUBLIC_GET or path.startswith("/static/")):
+        return True
+    return method == "POST" and path in {"/login", "/setup"}
+
+
+def _csrf_valid(request: Request, body: bytes) -> bool:
+    from src.auth import tokens_match
+
+    expected = str(request.session.get("csrf") or "")
+    header = request.headers.get("x-csrf-token", "")
+    if tokens_match(expected, header):
+        return True
+    ctype = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in ctype:
+        parsed = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        token = (parsed.get("csrf_token") or [""])[0]
+        return tokens_match(expected, token)
+    return False
+
+
+class AuthGateMiddleware:
+    """Require a session for the operator UI and reject cross-site posts."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        path = _normalize_path(scope.get("path") or "/")
+        method = scope.get("method", "GET").upper()
+        from src.auth import public_user
+
+        username = ""
+        try:
+            username = str(request.session.get("user") or "")
+        except Exception:
+            username = ""
+        user = public_user(username) if username else None
+        if user:
+            request.state.user = user
+        if _is_public(path, method):
+            await self.app(scope, receive, send)
+            return
+        if not user:
+            if path.startswith("/api") or "application/json" in request.headers.get("accept", ""):
+                response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            else:
+                nxt = _url_quote(scope.get("path") or "/dashboard", safe="")
+                response = RedirectResponse(url=f"/login?next={nxt}", status_code=303)
+            await response(scope, receive, send)
+            return
+        if method in {"POST", "PUT", "PATCH", "DELETE"}:
+            body = await request.body()
+            if not _csrf_valid(request, body):
+                response = JSONResponse({"detail": "CSRF check failed"}, status_code=403)
+                await response(scope, receive, send)
+                return
+
+            async def replay():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            await self.app(scope, replay, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapped(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {key.lower() for key, _value in headers}
+
+                def add(name: str, value: str) -> None:
+                    if name.lower().encode() not in existing:
+                        headers.append((name.encode(), value.encode()))
+
+                add("X-Content-Type-Options", "nosniff")
+                add("Referrer-Policy", "strict-origin-when-cross-origin")
+                add("X-Frame-Options", "DENY")
+                add("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+                add(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'self'; "
+                    "frame-ancestors 'none'",
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapped)
+
+
+def _session_secret() -> str:
+    key = os.getenv("ROUTELIX_SECRET_KEY", "").strip()
+    if len(key) >= 16:
+        return key
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(
+            "Set ROUTELIX_SECRET_KEY to a long random string before starting Routelix in server mode."
+        )
+    return "routelix-dev-only-secret-change-me"
+
+
+def _cookie_secure() -> bool:
+    from src.auth import cookie_secure
+
+    return cookie_secure()
+
+
+from starlette.middleware.sessions import SessionMiddleware
+
+app.add_middleware(AuthGateMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret(),
+    session_cookie="routelix_session",
+    max_age=60 * 60 * 12,
+    same_site="lax",
+    https_only=_cookie_secure(),
+)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +598,28 @@ def _build_run_args(
 # Page routes
 # ---------------------------------------------------------------------------
 
+def _login_context(request: Request, *, error: str = "", next_url: str = "/dashboard") -> dict:
+    from src.auth import client_ip, safe_next, setup_allowed, too_many_attempts, users_exist
+
+    return {
+        "error": error,
+        "setup_mode": setup_allowed(request),
+        "has_users": users_exist(),
+        "locked": too_many_attempts(client_ip(request)),
+        "next_url": safe_next(next_url),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
+async def marketing_home(request: Request):
+    if getattr(request.state, "user", None):
+        return RedirectResponse("/dashboard", status_code=303)
+    from src.public_site import landing_context
+
+    return templates.TemplateResponse(request, "landing.html", landing_context())
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     logs = _read_call_logs(limit=10)
     state = run_manager.get_state()
@@ -435,6 +628,224 @@ async def dashboard(request: Request):
         "run_state": state,
         "log_stats": _call_log_stats(),
     })
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/dashboard"):
+    from src.auth import ensure_bootstrap_admin, safe_next
+
+    ensure_bootstrap_admin()
+    if getattr(request.state, "user", None):
+        return RedirectResponse(safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", _login_context(request, next_url=next))
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    next: str = Form("/dashboard"),
+):
+    from src.auth import (
+        authenticate,
+        clear_failures,
+        client_ip,
+        cookie_secure,
+        ensure_bootstrap_admin,
+        new_csrf_token,
+        record_failure,
+        safe_next,
+        too_many_attempts,
+    )
+
+    ip = client_ip(request)
+    if too_many_attempts(ip):
+        return templates.TemplateResponse(
+            request, "login.html", _login_context(request, next_url=next), status_code=429
+        )
+    ensure_bootstrap_admin()
+    user = authenticate(username, password)
+    if not user:
+        record_failure(ip)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            _login_context(request, error="Those credentials were not accepted.", next_url=next),
+            status_code=401,
+        )
+    clear_failures(ip)
+    token = new_csrf_token()
+    request.session["user"] = user["username"]
+    request.session["csrf"] = token
+    response = RedirectResponse(safe_next(next), status_code=303)
+    response.set_cookie(
+        "routelix_csrf",
+        token,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure(),
+        max_age=12 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.post("/setup")
+async def setup_admin(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+):
+    from src.auth import (
+        cookie_secure,
+        create_user,
+        new_csrf_token,
+        setup_allowed,
+    )
+
+    if not setup_allowed(request):
+        raise HTTPException(status_code=403, detail="First-run setup is not available on this connection")
+    try:
+        user = create_user(username, password, role="admin")
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            _login_context(request, error=str(exc)),
+            status_code=400,
+        )
+    token = new_csrf_token()
+    request.session["user"] = user["username"]
+    request.session["csrf"] = token
+    response = RedirectResponse("/admin/users", status_code=303)
+    response.set_cookie(
+        "routelix_csrf",
+        token,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure(),
+        max_age=12 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie("routelix_csrf", path="/")
+    return response
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from src.auth import list_public_users
+
+    return templates.TemplateResponse(
+        request,
+        "admin_users.html",
+        {"users": list_public_users(), "error": "", "created": ""},
+    )
+
+
+@app.post("/admin/users", response_class=HTMLResponse)
+async def admin_users_create(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    role: str = Form("operator"),
+):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from src.auth import create_user, list_public_users
+
+    error = ""
+    created = ""
+    try:
+        created_user = create_user(username, password, role=role)
+        created = created_user["username"]
+    except ValueError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "admin_users.html",
+        {"users": list_public_users(), "error": error, "created": created},
+    )
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/robots.txt")
+async def robots_txt():
+    from src.public_site import robots_txt as build_robots
+
+    return Response(build_robots(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    from src.public_site import sitemap_xml as build_sitemap
+
+    return Response(build_sitemap(), media_type="application/xml")
+
+
+@app.get("/llms.txt")
+async def llms_txt():
+    from src.public_site import llms_txt as build_llms
+
+    return Response(build_llms(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/llms-full.txt")
+async def llms_full_txt():
+    from src.public_site import llms_full_txt as build_llms
+
+    return Response(build_llms(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/site.webmanifest")
+@app.get("/manifest.webmanifest")
+async def web_manifest():
+    from src.public_site import DESCRIPTION
+
+    payload = {
+        "name": "Routelix",
+        "short_name": "Routelix",
+        "description": DESCRIPTION,
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#0C2340",
+        "theme_color": "#0C2340",
+        "icons": [
+            {"src": "/static/landing/favicon-32.png", "sizes": "32x32", "type": "image/png"},
+            {"src": "/static/landing/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
+            {
+                "src": "/static/routelix-mark.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any",
+            },
+        ],
+    }
+    return JSONResponse(payload, media_type="application/manifest+json")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    icon = STATIC_DIR / "landing" / "favicon.ico"
+    if not icon.is_file():
+        icon = STATIC_DIR / "routelix-mark.svg"
+    return FileResponse(icon)
 
 
 @app.get("/preflight", response_class=HTMLResponse)
@@ -1378,8 +1789,15 @@ async def api_get_transcript(filename: str):
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+RESERVED_PORTS = {1080, 5001, 9222, 12525, 27017}
+
+
+def _server_host() -> str:
+    return os.environ.get("ROUTELIX_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+
 def _server_port(default: int = 8000) -> int:
-    raw_port = os.environ.get("INDUS_CONSOLE_PORT")
+    raw_port = os.environ.get("ROUTELIX_PORT") or os.environ.get("INDUS_CONSOLE_PORT")
     for idx, arg in enumerate(sys.argv[1:]):
         if arg == "--port" and idx + 2 <= len(sys.argv[1:]):
             raw_port = sys.argv[idx + 2]
@@ -1394,28 +1812,55 @@ def _server_port(default: int = 8000) -> int:
         raise SystemExit(f"Invalid console port: {raw_port}") from exc
     if port < 1 or port > 65535:
         raise SystemExit(f"Console port out of range: {port}")
+    if port in RESERVED_PORTS:
+        raise SystemExit(
+            f"Port {port} is already used by another service on this host. "
+            "Set ROUTELIX_PORT to a free port (8787 is the Linux default)."
+        )
     return port
 
 
 @app.on_event("startup")
 async def _web_startup() -> None:
     logger.info("INDUS web console build=%s (contacts API: /api/contacts/list)", WEB_APP_BUILD)
+    try:
+        from src.auth import ensure_bootstrap_admin
+
+        ensure_bootstrap_admin()
+    except Exception:
+        logger.exception("Admin bootstrap failed")
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from src.linux_audio import ensure_linux_call_audio
+
+            ensure_linux_call_audio()
+        except Exception:
+            logger.exception("Linux audio sinks were not created at startup")
 
 
 def main() -> None:
     import uvicorn  # type: ignore
 
     runtime_base()
+    host = _server_host()
+    if host not in {"127.0.0.1", "localhost", "::1"} and os.getenv(
+        "ROUTELIX_ALLOW_PUBLIC_BIND", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        raise SystemExit(
+            "Refusing to listen on a public interface. Keep ROUTELIX_HOST=127.0.0.1 "
+            "and publish the console through nginx."
+        )
     port = _server_port()
-    try:
-        from src.scripts.kill_port import kill_port  # type: ignore
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        try:
+            from src.scripts.kill_port import kill_port  # type: ignore
 
-        kill_port(port)
-    except Exception:
-        pass
+            kill_port(port)
+        except Exception:
+            pass
     uvicorn.run(
         "src.web_app:app",
-        host="127.0.0.1",
+        host=host,
         port=port,
         reload=False,
         log_level="info",

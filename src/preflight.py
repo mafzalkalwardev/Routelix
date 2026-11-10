@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -28,11 +29,24 @@ def check_env() -> CheckResult:
     return CheckResult("ENV File", "ok", ".env present and GROQ_API_KEY is set")
 
 
+def _local_speech_selected() -> bool:
+    stt = os.getenv("STT_BACKEND", "groq").strip().lower()
+    llm = os.getenv("LLM_BACKEND", "groq").strip().lower()
+    return stt == "local" and llm == "local"
+
+
 def check_groq_api(api_key: Optional[str] = None) -> CheckResult:
     if os.getenv("OFFLINE_MODE", "").lower() in ("1", "true", "yes", "on"):
         return CheckResult("Groq API", "warn", "Offline mode enabled — external Groq call skipped")
     key = api_key or os.getenv("GROQ_API_KEY", "")
     if not key or key.startswith("your_"):
+        if _local_speech_selected():
+            return CheckResult(
+                "Groq API",
+                "ok",
+                "Local STT and LLM are selected. Set GROQ_API_KEY and switch STT_BACKEND "
+                "or LLM_BACKEND to groq when you want the cloud models.",
+            )
         return CheckResult("Groq API", "fail", "GROQ_API_KEY not set — cannot connect")
     try:
         from groq import Groq  # type: ignore
@@ -78,8 +92,35 @@ def check_chrome_profile(profile_name: Optional[str] = None) -> CheckResult:
     return CheckResult("Chrome Profile", "ok", f"chrome_profiles/{name} found")
 
 
+def _linux_virtual_hint(hint: str) -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    lowered = (hint or "").lower()
+    return lowered.startswith("routelix_") or lowered.endswith(".monitor")
+
+
 def check_audio_loopback(device_hint: Optional[str] = None) -> CheckResult:
     hint = device_hint or os.getenv("LOOPBACK_DEVICE", "CABLE Input")
+    if _linux_virtual_hint(hint):
+        from src.linux_audio import SINK_TO_GV, list_sinks, pactl_available
+
+        if not pactl_available():
+            return CheckResult(
+                "Audio Loopback",
+                "fail",
+                "pactl is not installed. Install pulseaudio-utils for the Linux virtual audio route.",
+            )
+        if SINK_TO_GV not in list_sinks():
+            return CheckResult(
+                "Audio Loopback",
+                "warn",
+                f"Pulse sink {SINK_TO_GV} is not loaded yet. A live run creates it.",
+            )
+        return CheckResult(
+            "Audio Loopback",
+            "ok",
+            f"Pulse sink {SINK_TO_GV} is ready for TTS into Chromium.",
+        )
     try:
         from src.voice_playback import find_loopback_devices, list_audio_devices, probe_output_device  # type: ignore
         devices = list_audio_devices()
@@ -118,6 +159,26 @@ def check_capture_device(device_hint: Optional[str] = None) -> CheckResult:
     laptop mic instead, Tony's voice never reaches the call.
     """
     hint = device_hint or os.getenv("CAPTURE_DEVICE", "default")
+    if _linux_virtual_hint(hint):
+        from src.linux_audio import CAPTURE_MONITOR, list_sinks, pactl_available
+
+        if not pactl_available():
+            return CheckResult(
+                "Capture Device",
+                "fail",
+                "pactl is not installed, so the Google Voice monitor cannot be recorded.",
+            )
+        if "routelix_from_gv" not in list_sinks():
+            return CheckResult(
+                "Capture Device",
+                "warn",
+                f"Pulse monitor {CAPTURE_MONITOR} will be created when a live run starts.",
+            )
+        return CheckResult(
+            "Capture Device",
+            "ok",
+            f"STT will record {CAPTURE_MONITOR}.",
+        )
     if not hint or hint.lower() in ("default", "wasapi", "default (wasapi)"):
         try:
             import soundcard as sc  # type: ignore
@@ -253,6 +314,22 @@ def check_callback_number() -> CheckResult:
 
 def check_auto_audio_route(loopback_device: Optional[str] = None) -> CheckResult:
     """Verify VB-CABLE + Speakers endpoints exist for automatic live-call routing."""
+    loopback = loopback_device or os.getenv("LOOPBACK_DEVICE", "CABLE Input")
+    if sys.platform != "win32":
+        from src.linux_audio import SINK_FROM_GV, SINK_TO_GV, pactl_available
+
+        if not pactl_available():
+            return CheckResult(
+                "Auto Audio Route",
+                "fail",
+                "Linux audio route needs pactl (pulseaudio-utils) and PulseAudio or PipeWire.",
+            )
+        return CheckResult(
+            "Auto Audio Route",
+            "ok",
+            f"Linux route: TTS → {SINK_TO_GV}, Chromium speaker → {SINK_FROM_GV}, "
+            f"STT ← {SINK_FROM_GV}.monitor. Sinks are created before a live run.",
+        )
     try:
         from src.audio_setup import find_endpoint, find_speaker_endpoint, paired_or_cable
 

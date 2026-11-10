@@ -31,7 +31,7 @@ It dials from a Windows PC, talks with a local or API voice agent, detects voice
 
 `Routelix` `self-hosted AI auto dialer` `AI voice agent` `Google Voice auto dialer` `answering machine detection` `voicemail detection` `call recording CRM` `carrier CRM` `lead qualification` `local LLM cold caller` `Python FastAPI dialer` `open source alternative to Vapi` `Kokoro` `Piper TTS` `faster-whisper`
 
-Public page: https://mafzalkalwardev.github.io/Routelix/
+Public page: https://routelix.induswebagency.com/
 
 The full search, answer, and generative-engine map, including the question-style queries, is in [docs/ROUTELIX_SEO_AEO_GEO.md](docs/ROUTELIX_SEO_AEO_GEO.md).
 
@@ -105,6 +105,35 @@ Every operator tab, then the CRM list and a profile with sample records.
 - Windows EXE build with PyInstaller.
 - Desktop shortcut and Windows Startup shortcut installer.
 - Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, greeting library, and realtime loop behavior.
+
+---
+
+## Linux VPS (routelix.induswebagency.com)
+
+The operator console can run on Ubuntu 24.04, including aarch64, behind nginx. Google Chrome has no Linux arm64 build, so the server uses Chromium. Windows VB-CABLE support is unchanged.
+
+Exact steps on the server:
+
+```bash
+sudo mkdir -p /opt/routelix
+sudo chown "$USER" /opt/routelix
+git clone <this-repo> /opt/routelix
+cd /opt/routelix
+sudo bash deploy/linux/install.sh
+sudoedit /opt/routelix/.env   # set ROUTELIX_ADMIN_PASSWORD; add GROQ_API_KEY only if you want cloud STT/LLM
+sudo systemctl restart routelix-audio routelix
+curl -fsS http://127.0.0.1:8787/healthz
+sudo cp deploy/linux/nginx/routelix-upgrade.conf /etc/nginx/conf.d/routelix-upgrade.conf
+sudo cp deploy/linux/nginx/routelix.conf /etc/nginx/sites-available/routelix
+sudo ln -sfn /etc/nginx/sites-available/routelix /etc/nginx/sites-enabled/routelix
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d routelix.induswebagency.com
+sudo -u routelix bash deploy/linux/gv-login.sh sales_profile
+```
+
+Then from a laptop, `ssh -L 6080:127.0.0.1:6080 <user>@<server>` and open `http://127.0.0.1:6080/vnc.html` to finish the Google Voice sign-in once. Copying an already signed-in Chromium profile (`python -m src.gv_session import-profile`) is the other supported path. A cookie file is best-effort and Google often rejects it.
+
+`deploy/linux/.env.example` lists every variable. The unit listens on `127.0.0.1:8787` with `MemoryMax=8G` and `Restart=always`. Full notes, including the Pulse/PipeWire route and what still cannot be headless, are in [deploy/linux/README.md](deploy/linux/README.md).
 
 ---
 

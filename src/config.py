@@ -85,6 +85,15 @@ _DEFAULTS = {
 }
 
 
+def _server_mode() -> bool:
+    return os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _groq_key_present() -> bool:
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    return bool(key) and not key.startswith("your_")
+
+
 def _load_json() -> dict:
     if CONFIG_FILE.exists():
         try:
@@ -136,8 +145,11 @@ class Config:
         self.groq_model: str = os.getenv(
             "GROQ_MODEL", j.get("groq_model", _DEFAULTS["groq_model"])
         )
+        llm_fallback = "groq"
+        if _server_mode() and "LLM_BACKEND" not in os.environ and "llm_backend" not in j:
+            llm_fallback = "groq" if _groq_key_present() else "local"
         self.llm_backend: str = os.getenv(
-            "LLM_BACKEND", j.get("llm_backend", "groq")
+            "LLM_BACKEND", j.get("llm_backend", llm_fallback)
         ).strip().lower()
         self.local_llm_path: str = os.getenv(
             "LOCAL_LLM_PATH",
@@ -149,17 +161,29 @@ class Config:
         self.llm_model_batch: str = os.getenv(
             "LLM_MODEL_BATCH", j.get("llm_model_batch", self.groq_model)
         )
+        stt_fallback = "groq"
+        if _server_mode() and "STT_BACKEND" not in os.environ and "stt_backend" not in j:
+            stt_fallback = "groq" if _groq_key_present() else "local"
         self.stt_backend: str = os.getenv(
-            "STT_BACKEND", j.get("stt_backend", "groq")
+            "STT_BACKEND", j.get("stt_backend", stt_fallback)
         ).strip().lower()
+        self.stt_local_model: str = os.getenv(
+            "STT_LOCAL_MODEL", j.get("stt_local_model", "base")
+        )
+        self.stt_compute_type: str = os.getenv(
+            "STT_COMPUTE_TYPE", j.get("stt_compute_type", "int8")
+        ).strip() or "int8"
         self.rotation_minutes: int = int(
             os.getenv("ROTATION_MINUTES", j.get("rotation_minutes", _DEFAULTS["rotation_minutes"]))
         )
         self.autocut_seconds: int = int(
             os.getenv("AUTOCUT_SECONDS", j.get("autocut_seconds", _DEFAULTS["autocut_seconds"]))
         )
+        loop_fallback = _DEFAULTS["loopback_device"]
+        if _server_mode() and "LOOPBACK_DEVICE" not in os.environ and "loopback_device" not in j:
+            loop_fallback = "routelix_to_gv"
         self.loopback_device: str = os.getenv(
-            "LOOPBACK_DEVICE", j.get("loopback_device", _DEFAULTS["loopback_device"])
+            "LOOPBACK_DEVICE", j.get("loopback_device", loop_fallback)
         )
         self.call_timeout: int = int(
             os.getenv("CALL_TIMEOUT", j.get("call_timeout", _DEFAULTS["call_timeout"]))
@@ -167,11 +191,17 @@ class Config:
         self.call_max_duration: int = int(
             os.getenv("CALL_MAX_DURATION", j.get("call_max_duration", _DEFAULTS["call_max_duration"]))
         )
+        capture_fallback = _DEFAULTS["capture_device"]
+        if _server_mode() and "CAPTURE_DEVICE" not in os.environ and "capture_device" not in j:
+            capture_fallback = "routelix_from_gv.monitor"
         self.capture_device: str = os.getenv(
-            "CAPTURE_DEVICE", j.get("capture_device", _DEFAULTS["capture_device"])
+            "CAPTURE_DEVICE", j.get("capture_device", capture_fallback)
         )
+        tts_fallback = _DEFAULTS["tts_engine"]
+        if _server_mode() and "TTS_ENGINE" not in os.environ and "tts_engine" not in j:
+            tts_fallback = "piper"
         self.tts_engine: str = os.getenv(
-            "TTS_ENGINE", j.get("tts_engine", _DEFAULTS["tts_engine"])
+            "TTS_ENGINE", j.get("tts_engine", tts_fallback)
         ).strip().lower()
         self.tts_voice: str = os.getenv(
             "TTS_VOICE", j.get("tts_voice", _DEFAULTS["tts_voice"])

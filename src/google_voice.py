@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import time
 from urllib.parse import urlparse
 from pathlib import Path
@@ -241,6 +242,14 @@ def _install_chromedriver_with_retry() -> Optional[str]:
 
 
 def _create_chrome_driver(options: Options) -> webdriver.Chrome:
+    from src.browser_launch import apply_browser, chromedriver_service
+
+    apply_browser(options)
+    service = chromedriver_service()
+    if service is not None:
+        return webdriver.Chrome(service=service, options=options)
+    if sys.platform.startswith("linux"):
+        return webdriver.Chrome(options=options)
     driver_path = _install_chromedriver_with_retry()
     if driver_path:
         return webdriver.Chrome(service=Service(driver_path), options=options)
@@ -305,6 +314,15 @@ class GoogleVoiceBrowser:
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         self.driver.get(GV_URL)
+        try:
+            from src.gv_session import load_imported_cookies
+
+            added = load_imported_cookies(self.driver, self.profile_dir)
+            if added:
+                logger.info("Loaded %d staged Google Voice cookies into the browser profile", added)
+                self.driver.get(GV_URL)
+        except Exception as exc:
+            logger.warning("Staged cookie import failed: %s", exc)
         time.sleep(3)
 
     def close(self) -> None:

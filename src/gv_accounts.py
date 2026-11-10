@@ -1,12 +1,21 @@
-"""Local Google Voice account registry with Windows-encrypted credentials."""
+"""Local Google Voice account registry.
+
+Windows stores the password with DPAPI. Linux stores it with an HMAC keystream
+keyed by ROUTELIX_SECRET_KEY (or a local secret file). The password is not
+written in plaintext on either platform.
+"""
 from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
+import hmac
 import json
+import os
 import re
+import secrets
+import sys
 import uuid
-from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
@@ -17,20 +26,60 @@ ACCOUNTS_FILE = runtime_base() / "data" / "gv_accounts.json"
 SESSION_MARKER = ".gv_session_ok"
 
 
-class _Blob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+def _secret_key() -> bytes:
+    secret = os.getenv("ROUTELIX_SECRET_KEY", "").strip().encode("utf-8")
+    if len(secret) >= 16:
+        return hashlib.sha256(b"routelix-gv-v1" + secret).digest()
+    path = runtime_base() / "data" / ".gv_secret"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(secrets.token_bytes(32))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return hashlib.sha256(b"routelix-gv-v1" + path.read_bytes()).digest()
 
 
-def _blob(data: bytes) -> tuple[_Blob, Any]:
-    buf = ctypes.create_string_buffer(data)
-    return _Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))), buf
+def _keystream(nonce: bytes, length: int) -> bytes:
+    key = _secret_key()
+    blocks = []
+    counter = 0
+    while sum(len(block) for block in blocks) < length:
+        blocks.append(hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return b"".join(blocks)[:length]
 
 
-def _protect(value: str) -> str:
-    if not value:
-        return ""
-    if not hasattr(ctypes, "windll"):
-        raise RuntimeError("Credential encryption is only supported on Windows")
+def _protect_portable(value: str) -> str:
+    nonce = secrets.token_bytes(16)
+    raw = value.encode("utf-8")
+    cipher = bytes(a ^ b for a, b in zip(raw, _keystream(nonce, len(raw))))
+    mac = hmac.new(_secret_key(), nonce + cipher, hashlib.sha256).digest()
+    blob = base64.b64encode(nonce + mac + cipher).decode("ascii")
+    return "portable:" + blob
+
+
+def _unprotect_portable(value: str) -> str:
+    blob = base64.b64decode(value.split(":", 1)[1])
+    nonce, mac, cipher = blob[:16], blob[16:48], blob[48:]
+    expected = hmac.new(_secret_key(), nonce + cipher, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected):
+        raise ValueError("Google Voice password could not be decrypted")
+    raw = bytes(a ^ b for a, b in zip(cipher, _keystream(nonce, len(cipher))))
+    return raw.decode("utf-8")
+
+
+def _protect_windows(value: str) -> str:
+    from ctypes import wintypes
+
+    class _Blob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    def _blob(data: bytes):
+        buf = ctypes.create_string_buffer(data)
+        return _Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))), buf
+
     source, keepalive = _blob(value.encode("utf-8"))
     output = _Blob()
     if not ctypes.windll.crypt32.CryptProtectData(
@@ -45,9 +94,16 @@ def _protect(value: str) -> str:
         ctypes.windll.kernel32.LocalFree(output.pbData)
 
 
-def _unprotect(value: str) -> str:
-    if not value:
-        return ""
+def _unprotect_windows(value: str) -> str:
+    from ctypes import wintypes
+
+    class _Blob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    def _blob(data: bytes):
+        buf = ctypes.create_string_buffer(data)
+        return _Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))), buf
+
     source, keepalive = _blob(base64.b64decode(value))
     output = _Blob()
     if not ctypes.windll.crypt32.CryptUnprotectData(
@@ -58,6 +114,24 @@ def _unprotect(value: str) -> str:
         return ctypes.string_at(output.pbData, output.cbData).decode("utf-8")
     finally:
         ctypes.windll.kernel32.LocalFree(output.pbData)
+
+
+def _protect(value: str) -> str:
+    if not value:
+        return ""
+    if sys.platform == "win32" and hasattr(ctypes, "windll"):
+        return _protect_windows(value)
+    return _protect_portable(value)
+
+
+def _unprotect(value: str) -> str:
+    if not value:
+        return ""
+    if value.startswith("portable:"):
+        return _unprotect_portable(value)
+    if sys.platform == "win32" and hasattr(ctypes, "windll"):
+        return _unprotect_windows(value)
+    raise RuntimeError("This password was encrypted on Windows and cannot be read here")
 
 
 def make_profile_name(name: str, email: str) -> str:

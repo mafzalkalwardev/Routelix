@@ -186,10 +186,11 @@ class LocalWhisperSTT:
             from faster_whisper import WhisperModel
 
             self.model_dir.mkdir(parents=True, exist_ok=True)
+            compute_type = os.getenv("STT_COMPUTE_TYPE", "int8").strip() or "int8"
             self._model = WhisperModel(
                 self.model,
                 device="cpu",
-                compute_type="int8",
+                compute_type=compute_type,
                 download_root=str(self.model_dir),
                 local_files_only=True,
             )

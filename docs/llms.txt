@@ -8,7 +8,7 @@ Routelix detects answering machines and voicemail. On a connected outbound call 
 
 There is no setup fee and no contact limit inside the app. A local campaign does not add a per-minute voice-API bill. The phone line is the operator's Google Voice account.
 
-Public page: https://mafzalkalwardev.github.io/Routelix/
+Public page: https://routelix.induswebagency.com/
 Source: https://github.com/mafzalkalwardev/Routelix
 Search document: https://github.com/mafzalkalwardev/Routelix/blob/piper-amd-experiment/docs/ROUTELIX_SEO_AEO_GEO.md
 

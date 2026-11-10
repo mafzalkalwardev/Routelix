@@ -133,6 +133,24 @@ class AudioCapture:
     def _run(self) -> None:
         com_initialized = False
         try:
+            hint = (self.device_name_hint or "").lower()
+            if sys.platform.startswith("linux") and (
+                hint.startswith("routelix_") or hint.endswith(".monitor")
+            ):
+                from src.linux_audio import CAPTURE_MONITOR, capture_pulse_monitor
+
+                source = self.device_name_hint
+                if hint.startswith("routelix_") and not hint.endswith(".monitor"):
+                    source = CAPTURE_MONITOR
+                logger.info("AudioCapture using Pulse monitor %s", source)
+                capture_pulse_monitor(
+                    source,
+                    self.samplerate,
+                    self.frame_size,
+                    self._stop,
+                    self._put,
+                )
+                return
             com_initialized = _initialize_com_for_capture_thread()
             if self.device_name_hint.lower() in _LOOPBACK_ALIASES:
                 self._run_soundcard_loopback()
