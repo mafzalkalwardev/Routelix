@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Download Piper voices into models/piper. Nothing here is committed.
-# Usage: bash deploy/linux/download_voices.sh en_US-lessac-medium es_MX-ald-medium fr_FR-siwis-medium
+# Download English and Spanish Piper voices into models/piper. Nothing here is committed.
+# Usage: bash deploy/linux/download_voices.sh en_US-lessac-medium es_MX-ald-medium
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEST="$ROOT/models/piper"
 mkdir -p "$DEST"
 if [[ "$#" -lt 1 ]]; then
-  echo "Pass Piper voice ids, for example en_US-lessac-medium en_GB-alba-medium es_ES-davefx-medium fr_FR-siwis-medium" >&2
-  echo "There is no Piper voice for Urdu, Punjabi, Sindhi, or Haitian Creole." >&2
+  echo "Pass English or Spanish Piper voice ids, for example en_US-lessac-medium en_GB-alba-medium es_ES-davefx-medium es_MX-ald-medium" >&2
   exit 2
 fi
 for voice in "$@"; do
+  case "$voice" in
+    en_*|es_*) ;;
+    *)
+      echo "Only English (en_*) and Spanish (es_*) voices can be downloaded. Refusing ${voice}" >&2
+      exit 2
+      ;;
+  esac
   lang="${voice%%-*}"
   family="${lang%%_*}"
   region="${lang#*_}"

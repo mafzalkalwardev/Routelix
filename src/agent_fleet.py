@@ -1,9 +1,7 @@
-"""Admit Google Voice accounts onto isolated audio slots, or queue them.
+"""The single Google Voice account, Main line.
 
-Each admitted account gets routelix_to_gv_<n> and routelix_from_gv_<n>.
-One account is one live call. The number of admitted slots is min(accounts,
-max_agents()). Extra accounts wait. A crashed slot is marked and can be
-restarted up to SUPERVISOR_RESTARTS times.
+Routelix places one live call on routelix_to_gv / routelix_from_gv.monitor.
+A second saved account is not admitted.
 """
 from __future__ import annotations
 
@@ -12,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 from src.capacity import google_voice_concurrent_calls, max_agents
+from src.linux_audio import CAPTURE_MONITOR, SINK_FROM_GV, SINK_TO_GV
 
 
 def slot_audio(index: int) -> tuple[str, str, str]:
@@ -68,31 +67,30 @@ class Fleet:
 
     def plan(self, accounts: list[dict]) -> FleetPlan:
         enabled = [row for row in accounts if row.get("enabled", True)]
-        limit = max_agents()
-        admitted = enabled[:limit]
-        waiting = enabled[limit:]
+        admitted = enabled[:1]
         slots: list[AgentSlot] = []
-        for index, account in enumerate(admitted, start=1):
-            tts, speaker, monitor = slot_audio(index)
-            profile = str(account.get("profile_name") or f"agent_{index}").strip()
+        for account in admitted:
+            profile = str(account.get("profile_name") or "sales_profile").strip()
+            loopback = str(account.get("loopback_device") or "").strip() or SINK_TO_GV
+            capture = str(account.get("capture_device") or "").strip() or CAPTURE_MONITOR
             slots.append(
                 AgentSlot(
-                    index=index,
+                    index=1,
                     account_id=str(account.get("id") or ""),
                     email=str(account.get("email") or ""),
                     profile_name=profile,
-                    loopback_device=tts,
-                    capture_device=monitor,
-                    pulse_sink=speaker,
-                    pulse_source=tts + ".monitor",
+                    loopback_device=loopback,
+                    capture_device=capture,
+                    pulse_sink=SINK_FROM_GV,
+                    pulse_source=f"{SINK_TO_GV}.monitor",
                     state="idle",
                 )
             )
         with self._lock:
             self.slots = slots
-            self.queued = list(waiting)
-            self.max_agents = limit
-        return FleetPlan(slots=slots, queued_accounts=list(waiting), max_agents=limit)
+            self.queued = []
+            self.max_agents = max_agents()
+        return FleetPlan(slots=slots, queued_accounts=[], max_agents=max_agents())
 
     def mark(self, index: int, state: str, error: str = "") -> None:
         with self._lock:

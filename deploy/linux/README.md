@@ -134,17 +134,11 @@ Run Preflight, then Audio → test TTS and test capture, before a campaign. A VP
 
 ## 7. Concurrent agents
 
-One Google Voice account is one live call. Add more accounts in Settings (Connect uses `ensure_logged_in`) to add agents. `MAX_AGENTS=auto` admits only as many as the CPU budget allows after `ROUTELIX_RESERVED_CORES` (default 1) and `ROUTELIX_RESERVED_RAM_GB` (default 8, for MailForge/MongoDB and Ollama). On a 4-core / 24 GB host that cap is 4. RAM would allow more. The dashboard shows the cap, the active slots, and the queue.
+Routelix uses one Google Voice account, the Main line, and places one live call on it. The dashboard also reports host headroom after `ROUTELIX_RESERVED_CORES` (default 1) and `ROUTELIX_RESERVED_RAM_GB` (default 8). On a 4-core / 24 GB host the CPU headroom is 4 calls and RAM headroom is higher. That headroom is not used to admit another account.
 
-Each admitted account gets `routelix_to_gv_<n>` and `routelix_from_gv_<n>`. Speech-to-text uses `STT_LOCAL_MODEL=tiny` and `STT_THREADS=1` (measured 26x realtime for an 8 second clip on one x86 thread; about 16x on ARM at the default 0.6 scale). The local LLM is one shared queue (`LLM_PARALLEL=1`, `LLM_THREADS=2`), or `LLAMA_SERVER_URL` if you run `llama-server --parallel 1`.
+The Main line uses `routelix_to_gv` for speech playback and `routelix_from_gv.monitor` for capture. Speech-to-text uses `STT_LOCAL_MODEL=tiny` and `STT_THREADS=1` (measured 26x realtime for an 8 second clip on one x86 thread; about 16x on ARM at the default 0.6 scale). The local LLM is one shared queue (`LLM_PARALLEL=1`, `LLM_THREADS=2`), or `LLAMA_SERVER_URL` if you run `llama-server --parallel 1`.
 
-Optional per-slot process, restarted by systemd:
-
-```bash
-sudo systemctl enable --now routelix-agent@1
-```
-
-The console's parallel dialer also restarts a crashed slot browser up to 3 times. Per account, calls wait `ACCOUNT_MIN_GAP_SECONDS` (45) and stop after `ACCOUNT_MAX_CALLS_PER_HOUR` (30).
+Calls on the Main line wait `ACCOUNT_MIN_GAP_SECONDS` (45) and stop after `ACCOUNT_MAX_CALLS_PER_HOUR` (30).
 
 ## 8. Operators
 
@@ -152,12 +146,12 @@ The admin created from `ROUTELIX_ADMIN_PASSWORD` opens **Users** and adds operat
 
 ## 9. Scripts and extra voices
 
-The call script is edited at `/scripts`. Built-in templates cover a generic B2B appointment and INDUS Web Agency work: web development, SEO, AI bots and automation, and MailForge. Set `ACTIVE_SCRIPT_ID` (for example `indus-web`) so a live call follows that script. The page can type or hold-to-speak as the prospect. Nothing on that page dials.
+The call script is edited at `/scripts`. The only built-in template is the generic B2B appointment script. New script saves another script you write, and "Use this script on live calls" is what the voice agent follows (`ACTIVE_SCRIPT_ID` still overrides that choice). The page can type or hold-to-speak as the prospect. Nothing on that page dials.
 
-`install.sh` fetches Piper lessac medium. More voices:
+`install.sh` fetches Piper lessac medium. More English and Spanish voices:
 
 ```bash
-bash deploy/linux/download_voices.sh en_US-lessac-medium en_GB-alba-medium es_MX-ald-medium fr_FR-siwis-medium
+bash deploy/linux/download_voices.sh en_US-lessac-medium en_GB-alba-medium es_MX-ald-medium es_ES-davefx-medium
 ```
 
-Files land in `models/piper` and are not committed. Piper has no Urdu, Punjabi, Sindhi, or Haitian Creole voice. Kokoro needs its own model download and was not timed on this host. Lessac medium measured 47.6x realtime on a 4-vCPU x86 box (12.3 seconds of speech in 0.26 seconds). `/voices` shows that factor and an estimate for the engines that were not timed.
+Files land in `models/piper` and are not committed. The catalog is English and Spanish only. Kokoro needs its own model download and was not timed on this host. Lessac medium measured 47.6x realtime on a 4-vCPU x86 box (12.3 seconds of speech in 0.26 seconds). `/voices` shows that factor and an estimate for the engines that were not timed.

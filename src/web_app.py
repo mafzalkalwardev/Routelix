@@ -647,9 +647,13 @@ async def voices_page(request: Request):
 
 @app.get("/api/scripts")
 async def api_scripts():
-    from src.script_engine import load_scripts
+    from src.script_engine import active_script_id, load_scripts
 
-    return {"ok": True, "scripts": [item.to_dict() for item in load_scripts()]}
+    return {
+        "ok": True,
+        "active_script_id": active_script_id(),
+        "scripts": [item.to_dict() for item in load_scripts()],
+    }
 
 
 @app.post("/api/scripts")
@@ -658,7 +662,10 @@ async def api_save_script(request: Request):
 
     body = await request.json()
     script = CallScript.from_dict(body)
-    save_script(script)
+    try:
+        save_script(script, use_on_calls=bool(body.get("use_on_calls")))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     return {"ok": True, "script_id": script.script_id}
 
 
@@ -770,11 +777,10 @@ async def api_script_analytics(script_id: str):
 
 @app.get("/api/voices")
 async def api_voices():
-    from src.voice_catalog import CATALOG, GAPS, rtf_label
+    from src.voice_catalog import CATALOG, rtf_label
 
     return {
         "ok": True,
-        "gaps": list(GAPS),
         "voices": [
             {
                 "engine": item.engine,
@@ -1366,6 +1372,10 @@ async def api_save_settings(request: Request):
             allowed["parallel_profiles"] = parsed
         except (json.JSONDecodeError, ValueError) as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    allowed["n_slots"] = 1
+    allowed["max_concurrent_dials"] = 1
+    allowed["parallel_profiles"] = []
+    allowed["force_requested_slots"] = False
     _save_config(allowed)
     return {"ok": True, "saved": list(allowed.keys())}
 
@@ -1401,15 +1411,13 @@ async def api_gv_accounts():
 async def api_save_gv_account(request: Request):
     from src.gv_accounts import save_account
     body = await request.json()
+    if not str(body.get("name") or "").strip():
+        body["name"] = "Main line"
     if not str(body.get("loopback_device") or "").strip():
-        from src.agent_fleet import slot_audio
-        from src.gv_accounts import load_accounts
+        from src.linux_audio import CAPTURE_MONITOR, SINK_TO_GV
 
-        index = len(load_accounts()) + (0 if body.get("id") else 1)
-        index = max(1, index)
-        tts, _speaker, monitor = slot_audio(index)
-        body["loopback_device"] = tts
-        body["capture_device"] = body.get("capture_device") or monitor
+        body["loopback_device"] = SINK_TO_GV
+        body["capture_device"] = body.get("capture_device") or CAPTURE_MONITOR
     try:
         account = save_account(body)
     except (ValueError, OSError) as exc:

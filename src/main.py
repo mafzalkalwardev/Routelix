@@ -1841,8 +1841,8 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
-    # Each enabled account can place one live call. The fleet admits only as
-    # many as max_agents() allows and gives each its own Pulse sinks.
+    # One Google Voice account, one live call. Host headroom is logged and is
+    # not used to open a second line.
     from src.capacity import capacity_report, google_voice_concurrent_calls
     from src.gv_accounts import load_accounts
     enabled_accounts = [row for row in load_accounts(include_password=True) if row.get("enabled")]
@@ -1850,7 +1850,6 @@ def main() -> None:
     from src.agent_fleet import FLEET, prepare_slot_audio
 
     fleet_plan = FLEET.plan(enabled_accounts)
-    account_parallel_profiles = fleet_plan.as_parallel_profiles()
     if enabled_accounts:
         first_account = enabled_accounts[0]
         profile_name = first_account["profile_name"]
@@ -1884,9 +1883,7 @@ def main() -> None:
 
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    requested_slots = max(1, len(fleet_plan.slots) or 1)
-    if not fleet_plan.slots:
-        requested_slots = 1
+    requested_slots = 1
     logger.info(
         "Live agents=%d. Each Google Voice account places %d call at a time. %s",
         requested_slots,
@@ -2016,13 +2013,13 @@ def main() -> None:
 
     try:
         parallel_slots = build_parallel_slots(
-            requested=requested_slots,
-            max_concurrent_dials=max(cfg.max_concurrent_dials, requested_slots),
-            force_requested_slots=bool(fleet_plan.slots) or cfg.force_requested_slots,
+            requested=1,
+            max_concurrent_dials=1,
+            force_requested_slots=False,
             primary_profile=profile_name,
             primary_loopback=loopback_device,
             primary_capture=capture_device,
-            parallel_profiles=(account_parallel_profiles or cfg.parallel_profiles),
+            parallel_profiles=[],
             allow_shared_audio_routes=cfg.allow_shared_audio_routes,
         )
     except ValueError as exc:

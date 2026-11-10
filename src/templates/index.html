@@ -70,15 +70,15 @@
 
 <div class="panel" id="fleetPanel">
   <div class="panel-header">
-    <h3 class="panel-title">Agents</h3>
-    <span class="link-muted">{{ capacity.bottleneck }} limit · max {{ capacity.max_agents }}</span>
+    <h3 class="panel-title">Main line</h3>
+    <span class="link-muted">1 live call · {{ capacity.bottleneck }} headroom</span>
   </div>
   <p class="page-sub">{{ capacity_report }}</p>
   <div class="card-grid">
     <div class="stat-card">
       <div class="stat-body">
-        <div class="stat-label">Safe agents</div>
-        <div class="stat-value" id="fleetMax">{{ capacity.max_agents }}</div>
+        <div class="stat-label">Live calls</div>
+        <div class="stat-value" id="fleetMax">1</div>
       </div>
     </div>
     <div class="stat-card">
@@ -89,8 +89,8 @@
     </div>
     <div class="stat-card">
       <div class="stat-body">
-        <div class="stat-label">Queued accounts</div>
-        <div class="stat-value" id="fleetQueued">{{ fleet.queued_accounts }}</div>
+        <div class="stat-label">CPU headroom</div>
+        <div class="stat-value" id="fleetQueued">{{ capacity.cpu_agents }}</div>
       </div>
     </div>
     <div class="stat-card">
@@ -116,7 +116,7 @@
           <td>{{ slot.loopback_device }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="6">No accounts admitted yet. Add Google Voice accounts under Settings. One account is one live call.</td></tr>
+        <tr><td colspan="6">Main line is not connected yet. Save it under Settings. This install places one live call.</td></tr>
         {% endfor %}
       </tbody>
     </table>

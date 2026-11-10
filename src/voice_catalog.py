@@ -1,8 +1,4 @@
-"""Local voices the server can run. Model files are downloaded, not committed.
-
-Piper has no usable Urdu, Punjabi, Sindhi, or Haitian Creole voice in the
-public rhasspy set. Those languages are listed in GAPS and are not selectable.
-"""
+"""English and Spanish voices the server can run. Model files are downloaded, not committed."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -48,19 +44,7 @@ SPANISH_PIPER = (
     VoiceChoice("piper", "es_MX-ald-medium", "es", "Spanish, Mexico, male, Ald, medium"),
     VoiceChoice("piper", "es_MX-claude-high", "es", "Spanish, Mexico, female, Claude, high"),
 )
-FRENCH_PIPER = (
-    VoiceChoice("piper", "fr_FR-siwis-medium", "fr", "French, female, Siwis, medium"),
-    VoiceChoice("piper", "fr_FR-upmc-medium", "fr", "French, male, UPMC, medium"),
-    VoiceChoice("piper", "fr_FR-tom-medium", "fr", "French, male, Tom, medium"),
-)
-OTHER_PIPER = (
-    VoiceChoice("piper", "de_DE-thorsten-medium", "de", "German, male, Thorsten, medium"),
-    VoiceChoice("piper", "pt_BR-faber-medium", "pt", "Portuguese, Brazil, male, Faber, medium"),
-    VoiceChoice("piper", "it_IT-riccardo-x_low", "it", "Italian, male, Riccardo, extra-low"),
-)
-
 # Kokoro ids inside voices-v1.0.bin. The bin is downloaded, not committed.
-# French Siwis is listed. Kokoro has no Urdu, Punjabi, Sindhi, or Haitian Creole.
 ENGLISH_KOKORO = (
     VoiceChoice("kokoro", "af_heart", "en", "English, US, Heart"),
     VoiceChoice("kokoro", "af_bella", "en", "English, US, Bella"),
@@ -73,29 +57,16 @@ SPANISH_KOKORO = (
     VoiceChoice("kokoro", "ef_dora", "es", "Spanish, Dora"),
     VoiceChoice("kokoro", "em_alex", "es", "Spanish, Alex"),
 )
-FRENCH_KOKORO = (
-    VoiceChoice("kokoro", "ff_siwis", "fr", "French, Siwis"),
-)
-
-# Piper's public voices do not cover these. Do not pretend otherwise.
-GAPS = (
-    {"language": "ur", "name": "Urdu"},
-    {"language": "pa", "name": "Punjabi"},
-    {"language": "sd", "name": "Sindhi"},
-    {"language": "ht", "name": "Haitian Creole"},
-)
-
 CATALOG = (
     ENGLISH_EDGE
     + SPANISH_EDGE
     + ENGLISH_PIPER
     + SPANISH_PIPER
-    + FRENCH_PIPER
-    + OTHER_PIPER
     + ENGLISH_KOKORO
     + SPANISH_KOKORO
-    + FRENCH_KOKORO
 )
+
+SUPPORTED_LANGUAGES = frozenset({"en", "es"})
 
 # Piper lessac medium, 4 vCPU x86: 12.3 seconds of speech synthesized in 0.26 seconds (47.6x).
 # That host is not ARM. An ARM estimate is about 0.6 of this figure. Kokoro was not timed
@@ -119,8 +90,8 @@ def rtf_label(engine: str) -> str:
 
 def voices_for(language: str, engine: str | None = None) -> tuple[VoiceChoice, ...]:
     lang = (language or "en").strip().lower()[:2]
-    if any(gap["language"] == lang for gap in GAPS):
-        raise ValueError(f"No local Piper or Kokoro voice is available for {lang}")
+    if lang not in SUPPORTED_LANGUAGES:
+        raise ValueError("Routelix voices are English and Spanish only")
     chosen = tuple(item for item in CATALOG if item.language == lang)
     if not chosen:
         raise ValueError(f"No catalog voice for {lang}")

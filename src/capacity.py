@@ -1,8 +1,8 @@
-"""Safe concurrent agents on a shared 4 OCPU / 24 GB ARM host.
+"""Capacity for the one Google Voice account on a shared 4 OCPU / 24 GB host.
 
-One Google Voice number still carries one live call. Concurrency comes from
-giving each agent its own account. The planner then caps how many of those
-accounts may be on a call at once.
+That account places one live call. The planner also reports how many calls
+the CPU and RAM could carry after reservations. Those numbers are headroom.
+Routelix does not admit a second account.
 
 Defaults reserve MailForge and MongoDB (~2 GB) plus a future Ollama fleet
 (6 GB and 1 core). Override with ROUTELIX_RESERVED_RAM_GB and
@@ -123,18 +123,8 @@ def cpu_agent_limit() -> int:
 
 
 def max_agents() -> int:
-    """Safe simultaneous agents. MAX_AGENTS=auto, or a positive cap."""
-    raw = os.getenv("MAX_AGENTS", "auto").strip().lower()
-    planned = min(ram_agent_limit(), cpu_agent_limit())
-    if raw in {"", "auto"}:
-        return max(1, planned)
-    try:
-        requested = int(raw)
-    except ValueError:
-        return max(1, planned)
-    if requested < 1:
-        return 1
-    return min(requested, planned)
+    """Calls this install will place at once. One account, one live call."""
+    return GOOGLE_VOICE_CONCURRENT_CALLS
 
 
 def piper_rtf() -> float:
@@ -155,20 +145,20 @@ def capacity_report() -> str:
         f"Host {host_cores():.0f} cores / {host_ram_gb():.0f} GB, "
         f"reserving {reserved_cores():.0f} core and {reserved_ram_gb():.0f} GB "
         f"(MailForge/MongoDB and Ollama). "
-        f"One Google Voice account is {GOOGLE_VOICE_CONCURRENT_CALLS} live call. "
-        f"Each extra agent is about {per_agent_mb()} MB "
+        f"The Main line places {GOOGLE_VOICE_CONCURRENT_CALLS} live call. "
+        f"One Chromium session is about {per_agent_mb()} MB "
         f"(Chromium {CHROMIUM_MB} MB, worker {AGENT_PROCESS_MB} MB). "
         f"Shared once: whisper {WHISPER_TINY_MB if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_MB} MB, "
         f"Piper {PIPER_MB} MB, local LLM {LLM_1_5B_Q4_MB} MB, "
         f"PipeWire {PIPEWIRE_MB} MB, OS/nginx {OS_AND_NGINX_MB} MB. "
-        f"RAM would allow {ram_agent_limit()} agents. "
-        f"CPU allows {cpu_agent_limit()} "
-        f"({CORES_PER_LIVE_CALL} core per live call on the cores left after the reservation). "
+        f"Host headroom after the reservation: RAM could hold {ram_agent_limit()} calls "
+        f"and CPU could hold {cpu_agent_limit()} "
+        f"({CORES_PER_LIVE_CALL} core per live call). "
+        f"The tighter headroom is {kind}. Extra accounts are not admitted. "
         f"faster-whisper {stt_model()} int8, 1 thread, measured {WHISPER_TINY_RTF if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_RTF:.1f}x "
         f"realtime on x86; estimated {stt_rtf():.1f}x on one ARM core. "
         f"Piper lessac medium measured {piper_rtf():.1f}x realtime on the same x86 host "
-        f"(about {piper_rtf() * 0.6:.0f}x if ARM is 0.6 of that). "
-        f"The limiter is {kind}. Safe simultaneous agents: {max_agents()}."
+        f"(about {piper_rtf() * 0.6:.0f}x if ARM is 0.6 of that)."
     )
 
 

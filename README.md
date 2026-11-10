@@ -537,32 +537,11 @@ Common `dialer_config.json` values:
 
 For 24/7 calling, keep `min_ring_seconds` above zero, use a cooldown, and do not rapid-fire failed numbers.
 
-### Controlled parallel calling
+### One Google Voice account
 
-Parallel mode uses a fixed worker per Chrome profile and pulls contacts from one shared queue. Configure one logged-in Google Voice profile and one isolated audio route for every slot:
+Settings has a single account, Main line. It places one live call. The dashboard reports CPU and RAM headroom after the reserved budget, and that headroom does not start a second line.
 
-```json
-{
-  "n_slots": 2,
-  "max_concurrent_dials": 5,
-  "parallel_profiles": [
-    {
-      "profile_name": "sales_line_1",
-      "loopback_device": "CABLE-A Input",
-      "capture_device": "CABLE-A Output"
-    },
-    {
-      "profile_name": "sales_line_2",
-      "loopback_device": "CABLE-B Input",
-      "capture_device": "CABLE-B Output"
-    }
-  ]
-}
-```
-
-The dialer applies the source Auto Dialer RAM/Chrome slot recommendation unless `force_requested_slots` is explicitly enabled. Shared audio routes are rejected by default because one AI response would otherwise be broadcast into multiple calls.
-
-Google Voice accounts can be managed from **Settings → Google Voice Accounts**. Each enabled account automatically becomes a calling slot and receives different contacts from the shared queue. Use **Connect / Verify** once to establish its persistent Chrome session. Saved passwords are protected with Windows DPAPI for the current Windows user and are never returned by the web API; Google MFA, CAPTCHA, and security challenges still require completion in the visible Chrome window. For two or more simultaneous AI conversations, configure a distinct loopback and capture device pair on every account.
+Use **Connect / Verify** once to establish the Chrome session. Saved passwords are protected with Windows DPAPI on Windows and are never returned by the web API. A Google verification step still has to be finished in the browser window.
 
 ---
 

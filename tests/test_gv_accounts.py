@@ -37,11 +37,20 @@ def test_windows_cable_a_is_stored_as_the_linux_route(tmp_path, monkeypatch):
         assert saved["capture_device"] == "CABLE-A Output"
 
 
-def test_duplicate_profile_is_rejected(tmp_path, monkeypatch):
+def test_a_second_google_voice_account_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", tmp_path / "gv_accounts.json")
-    accounts.save_account({"email": "one@example.com", "profile_name": "same"})
-    with pytest.raises(ValueError, match="distinct Chrome profile"):
-        accounts.save_account({"email": "two@example.com", "profile_name": "SAME"})
+    saved = accounts.save_account({"email": "one@example.com", "profile_name": "main"})
+    assert saved["name"] == "Main line"
+    with pytest.raises(ValueError, match="one Google Voice account"):
+        accounts.save_account({"email": "two@example.com", "profile_name": "other"})
+    updated = accounts.save_account({
+        "id": saved["id"],
+        "email": "one@example.com",
+        "profile_name": "main",
+        "name": "Main line",
+    })
+    assert updated["id"] == saved["id"]
+    assert len(accounts.load_accounts()) == 1
 
 
 def test_delete_preserves_chrome_profile_data(tmp_path, monkeypatch):

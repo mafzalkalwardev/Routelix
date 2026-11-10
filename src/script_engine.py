@@ -7,6 +7,7 @@ not in the script, the engine discards it and says the scripted line.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -187,40 +188,28 @@ def default_objections(product: str) -> dict[str, str]:
 
 
 def builtin_templates() -> list[CallScript]:
-    shared = default_objections("{product}")
-    specs = [
-        ("b2b-appointment", "B2B appointment", "en", "a short working session", "Book a meeting. Do not pitch the whole service."),
-        ("indus-web", "INDUS web development", "en", "a new or rebuilt website", "INDUS Web Agency builds the site. Book a scoping call."),
-        ("indus-seo", "INDUS SEO", "en", "search visibility for the business", "INDUS Web Agency. Do not promise rankings."),
-        ("indus-automation", "INDUS AI bots and automation", "en", "an automation or bot for repetitive work", "INDUS Web Agency. Do not invent a model price."),
-        ("indus-mailforge", "INDUS MailForge", "en", "MailForge for the company inbox", "INDUS Web Agency. MailForge is the product name."),
-    ]
-    scripts = []
-    for script_id, name, language, product, _goal in specs:
-        company = "INDUS Web Agency" if script_id.startswith("indus-") else "{company}"
-        scripts.append(
-            CallScript(
-                script_id=script_id,
-                name=name,
-                language=language,
-                product=product,
-                compliance=(
-                    f"Hi, this is {{agent_name}} calling from {company} about {{product}}. "
-                    "If you would like me to stop, say do not call."
-                ),
-                opener="Am I speaking with {first_name}?",
-                qualify="Are you the person who would decide on {product}?",
-                value="The useful part of {product} is that your team stops doing that work by hand.",
-                close="I can hold 15 minutes this week. What email should the invite go to for {first_name}?",
-                voicemail=(
-                    "Hi {first_name}, this is {agent_name} at "
-                    f"{company}. I called about {{product}}. "
-                    "If you want a short conversation, call us back. Thank you."
-                ),
-                objections=default_objections(product),
-            )
+    product = "a short working session"
+    return [
+        CallScript(
+            script_id="b2b-appointment",
+            name="B2B appointment",
+            language="en",
+            product=product,
+            compliance=(
+                "Hi, this is {agent_name} calling from {company} about {product}. "
+                "If you would like me to stop, say do not call."
+            ),
+            opener="Am I speaking with {first_name}?",
+            qualify="Are you the person who would decide on {product}?",
+            value="The useful part of {product} is that your team stops doing that work by hand.",
+            close="I can hold 15 minutes this week. What email should the invite go to for {first_name}?",
+            voicemail=(
+                "Hi {first_name}, this is {agent_name} at {company}. I called about {product}. "
+                "If you want a short conversation, call us back. Thank you."
+            ),
+            objections=default_objections(product),
         )
-    return scripts
+    ]
 
 
 @dataclass
@@ -381,28 +370,69 @@ def scripts_path() -> Path:
     return runtime_base() / "data" / "call_scripts.json"
 
 
-def load_scripts() -> list[CallScript]:
+def _kept_script(script: CallScript) -> bool:
+    return not script.script_id.startswith("indus-")
+
+
+def _read_store() -> dict:
     path = scripts_path()
+    if not path.is_file():
+        return {"active_script_id": "", "scripts": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {"active_script_id": "", "scripts": []}
+    if not isinstance(raw, dict):
+        return {"active_script_id": "", "scripts": []}
+    return raw
+
+
+def load_scripts() -> list[CallScript]:
     stored: list[CallScript] = []
-    if path.is_file():
+    for row in _read_store().get("scripts") or []:
+        if not isinstance(row, dict):
+            continue
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            stored = [CallScript.from_dict(row) for row in raw.get("scripts", []) if isinstance(row, dict)]
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            stored = []
+            script = CallScript.from_dict(row)
+        except (TypeError, ValueError):
+            continue
+        if _kept_script(script):
+            stored.append(script)
     by_id = {item.script_id: item for item in builtin_templates()}
     for item in stored:
         by_id[item.script_id] = item
     return list(by_id.values())
 
 
-def save_script(script: CallScript) -> None:
-    current = [item for item in load_scripts() if item.script_id != script.script_id]
+def active_script_id() -> str:
+    chosen = os.getenv("ACTIVE_SCRIPT_ID", "").strip()
+    if chosen and not chosen.startswith("indus-"):
+        return chosen
+    stored = str(_read_store().get("active_script_id") or "").strip()
+    if stored and not stored.startswith("indus-") and get_script(stored):
+        return stored
+    return ""
+
+
+def save_script(script: CallScript, *, use_on_calls: bool = False) -> None:
+    if not _kept_script(script):
+        raise ValueError("INDUS service templates are not part of this install")
+    if not script.script_id or script.script_id == "script":
+        raise ValueError("Give the script a name before saving")
+    current = [item for item in load_scripts() if item.script_id != script.script_id and _kept_script(item)]
     current.append(script)
     path = scripts_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    active = str(_read_store().get("active_script_id") or "")
+    if use_on_calls:
+        active = script.script_id
+    if active.startswith("indus-"):
+        active = script.script_id if use_on_calls else ""
     path.write_text(
-        json.dumps({"scripts": [item.to_dict() for item in current]}, indent=2),
+        json.dumps(
+            {"active_script_id": active, "scripts": [item.to_dict() for item in current]},
+            indent=2,
+        ),
         encoding="utf-8",
     )
 

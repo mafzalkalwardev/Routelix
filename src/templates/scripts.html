@@ -11,8 +11,12 @@
 <div class="panel">
   <div class="form-grid">
     <div class="form-group">
-      <label for="scriptPick">Template</label>
+      <label for="scriptPick">Script</label>
       <select id="scriptPick"></select>
+    </div>
+    <div class="form-group">
+      <label for="scriptName">Name</label>
+      <input id="scriptName" type="text" placeholder="B2B appointment" />
     </div>
     <div class="form-group">
       <label for="scriptVoice">Voice for this script</label>
@@ -41,7 +45,9 @@
   <p class="field-hint">Variables: {first_name} {company} {product} {agent_name}</p>
   <div id="objectionFields"></div>
   <div class="form-actions">
+    <label class="check-row"><input id="useOnCalls" type="checkbox" /> Use this script on live calls</label>
     <button type="button" class="btn btn-primary" id="saveScript">Save script</button>
+    <button type="button" class="btn" id="newScript">New script</button>
     <span id="scriptMsg" class="field-hint"></span>
   </div>
 </div>
@@ -72,6 +78,7 @@
 const objectionNames = ["not_interested","too_busy","send_email","price","have_provider","who_is_this","call_back_later"];
 let scripts = [];
 let voices = [];
+let activeScriptId = "";
 function field(id){return document.getElementById(id)}
 function current(){return scripts.find(s => s.script_id === field("scriptPick").value) || scripts[0]}
 function fill(script){
@@ -83,7 +90,9 @@ function fill(script){
   field("pitch").value = script.pitch || 0;
   field("pause").value = script.pause_seconds || 0.15;
   field("varProduct").value = script.product || "";
+  field("scriptName").value = script.name || "";
   field("scriptVoice").value = script.voice_id || "";
+  field("useOnCalls").checked = script.script_id === activeScriptId;
   objectionNames.forEach(key => {
     const node = field("obj_"+key);
     if(node) node.value = (script.objections || {})[key] || "";
@@ -100,7 +109,14 @@ function payload(){
   const script = current();
   const objections = {};
   objectionNames.forEach(key => { objections[key] = field("obj_"+key).value; });
+  const name = field("scriptName").value.trim() || (script && script.name) || "Custom script";
+  const scriptId = (script && script.script_id && script.script_id !== "script")
+    ? script.script_id
+    : name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom-script";
   return Object.assign({}, script, {
+    script_id: scriptId,
+    name,
+    use_on_calls: field("useOnCalls").checked,
     compliance: field("compliance").value,
     opener: field("opener").value,
     qualify: field("qualify").value,
@@ -123,17 +139,32 @@ async function loadAnalytics(id){
 }
 async function boot(){
   const [s, v] = await Promise.all([fetch("/api/scripts"), fetch("/api/voices")]);
-  scripts = (await s.json()).scripts;
+  const scriptData = await s.json();
+  scripts = scriptData.scripts;
+  activeScriptId = scriptData.active_script_id || "";
   voices = (await v.json()).voices;
+  const selected = field("scriptPick").value;
   field("scriptPick").innerHTML = scripts.map(item => `<option value="${item.script_id}">${item.name}</option>`).join("");
+  if (selected && scripts.some(item => item.script_id === selected)) field("scriptPick").value = selected;
   field("scriptVoice").innerHTML = voices.map(item => `<option value="${item.voice_id}">${item.label}</option>`).join("");
-  renderObjections(scripts[0]);
-  field("scriptPick").addEventListener("change", () => { renderObjections(current()); });
+  renderObjections(current());
 }
+field("scriptPick").addEventListener("change", () => { renderObjections(current()); });
+field("newScript").addEventListener("click", () => {
+  const base = scripts.find(item => item.script_id === "b2b-appointment") || scripts[0] || {};
+  const name = "Custom script";
+  const copy = Object.assign({}, base, {script_id: "custom-" + Date.now().toString(36), name, objections: Object.assign({}, base.objections || {})});
+  scripts.push(copy);
+  field("scriptPick").innerHTML = scripts.map(item => `<option value="${item.script_id}">${item.name}</option>`).join("");
+  field("scriptPick").value = copy.script_id;
+  renderObjections(copy);
+  field("useOnCalls").checked = true;
+});
 field("saveScript").addEventListener("click", async () => {
   const r = await fetch("/api/scripts", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload())});
   const data = await r.json();
-  field("scriptMsg").textContent = data.ok ? "Saved." : (data.detail || "Not saved");
+  field("scriptMsg").textContent = data.ok ? "Saved." : (data.error || data.detail || "Not saved");
+  if (data.ok) boot();
 });
 field("hearBtn").addEventListener("click", async () => {
   const body = Object.assign(payload(), {

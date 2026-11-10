@@ -298,10 +298,11 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
 
     def _reply_from_script(self, prospect_text: str) -> str | None:
-        script_id = os.getenv("ACTIVE_SCRIPT_ID", "").strip()
+        from src.script_engine import ScriptSession, active_script_id, get_script, record_turn
+
+        script_id = active_script_id()
         if not script_id:
             return None
-        from src.script_engine import ScriptSession, get_script, record_turn
 
         if self._script_session is None or self._script_session.script.script_id != script_id:
             script = get_script(script_id)

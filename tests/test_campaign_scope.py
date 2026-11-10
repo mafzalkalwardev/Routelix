@@ -6,7 +6,7 @@ from src.capacity import capacity_report, google_voice_concurrent_calls
 from src.voice_catalog import CATALOG, language_of_voice, voices_for
 
 
-def test_one_google_voice_call_and_cpu_is_the_limit(monkeypatch):
+def test_one_google_voice_call_and_headroom_is_not_admission(monkeypatch):
     assert google_voice_concurrent_calls() == 1
     monkeypatch.setenv("ROUTELIX_RAM_GB", "24")
     monkeypatch.setenv("ROUTELIX_CPU_COUNT", "4")
@@ -17,33 +17,34 @@ def test_one_google_voice_call_and_cpu_is_the_limit(monkeypatch):
     from src.capacity import cpu_agent_limit, max_agents, ram_agent_limit
 
     assert ram_agent_limit() > cpu_agent_limit()
-    assert max_agents() == cpu_agent_limit()
-    assert max_agents() == 4
+    assert cpu_agent_limit() == 4
+    assert max_agents() == 1
     report = capacity_report()
-    assert "limiter is cpu" in report
+    assert "1 live call" in report
+    assert "headroom" in report
+    assert "not admitted" in report
     assert "4" in report
 
 
-def test_voice_catalog_lists_local_voices_and_real_gaps():
-    from src.voice_catalog import GAPS
-
+def test_voice_catalog_is_english_and_spanish_only():
     languages = {item.language for item in CATALOG}
-    assert {"en", "es", "fr"} <= languages
+    assert languages == {"en", "es"}
     ids = {item.voice_id for item in CATALOG}
     assert "en_US-ryan-high" in ids
     assert "en_GB-alba-medium" in ids
-    assert "fr_FR-siwis-medium" in ids
-    assert "ff_siwis" in ids
+    assert "es_MX-ald-medium" in ids
+    assert "es_ES-davefx-medium" in ids
     assert "ef_dora" in ids and "em_alex" in ids
-    assert {gap["language"] for gap in GAPS} == {"ur", "pa", "sd", "ht"}
-    assert len(voices_for("en", "piper")) >= 6
+    assert not any(item.startswith(("fr_", "de_", "pt_", "it_", "ff_")) for item in ids)
+    assert len(voices_for("en", "piper")) >= 4
+    assert len(voices_for("es", "piper")) >= 2
     assert language_of_voice("es-MX-DaliaNeural") == "es"
     try:
-        voices_for("ur")
+        voices_for("fr")
     except ValueError as exc:
-        assert "Urdu" in str(exc) or "ur" in str(exc)
+        assert "English and Spanish" in str(exc)
     else:
-        raise AssertionError("Urdu was offered")
+        raise AssertionError("French was offered")
 
 
 def test_only_generic_b2b_appointment_templates():
@@ -61,7 +62,10 @@ def test_only_generic_b2b_appointment_templates():
 def test_script_engine_stays_on_script_and_blocks_invented_prices():
     from src.script_engine import builtin_templates, evaluate_script, guard_reply
 
-    script = next(item for item in builtin_templates() if item.script_id == "indus-web")
+    assert {item.script_id for item in builtin_templates()} == {"b2b-appointment"}
+    script = next(item for item in builtin_templates() if item.script_id == "b2b-appointment")
+    assert "Indus" not in script.compliance
+    assert "MailForge" not in script.product
     variables = {
         "first_name": "Sam",
         "company": "INDUS Web Agency",
@@ -82,8 +86,38 @@ def test_script_engine_stays_on_script_and_blocks_invented_prices():
     assert plain["pass_rate"] == 1.0
 
 
-def test_fleet_admits_up_to_max_and_queues_the_rest(monkeypatch):
-    monkeypatch.setenv("MAX_AGENTS", "2")
+def test_custom_script_saves_and_indus_templates_stay_out(tmp_path, monkeypatch):
+    from src import script_engine as scripts
+
+    monkeypatch.delenv("ACTIVE_SCRIPT_ID", raising=False)
+    path = tmp_path / "call_scripts.json"
+    path.write_text(
+        '{"active_script_id":"indus-web","scripts":[{"script_id":"indus-seo","name":"INDUS SEO","product":"rankings"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scripts, "scripts_path", lambda: path)
+    loaded = {item.script_id for item in scripts.load_scripts()}
+    assert loaded == {"b2b-appointment"}
+    assert scripts.active_script_id() == ""
+    custom = scripts.CallScript(
+        script_id="clinic-outreach",
+        name="Clinic outreach",
+        product="a short visit",
+        opener="Am I speaking with {first_name}?",
+    )
+    scripts.save_script(custom, use_on_calls=True)
+    assert scripts.get_script("clinic-outreach").name == "Clinic outreach"
+    assert scripts.active_script_id() == "clinic-outreach"
+    try:
+        scripts.save_script(scripts.CallScript(script_id="indus-mailforge", name="MailForge"))
+    except ValueError as exc:
+        assert "INDUS" in str(exc)
+    else:
+        raise AssertionError("INDUS template was saved")
+
+
+def test_fleet_admits_only_the_main_line(monkeypatch):
+    monkeypatch.setenv("MAX_AGENTS", "4")
     monkeypatch.setenv("ROUTELIX_CPU_COUNT", "4")
     monkeypatch.setenv("ROUTELIX_RESERVED_CORES", "1")
     monkeypatch.setenv("ROUTELIX_RAM_GB", "24")
@@ -95,11 +129,12 @@ def test_fleet_admits_up_to_max_and_queues_the_rest(monkeypatch):
         for i in range(1, 5)
     ]
     plan = Fleet().plan(accounts)
-    assert len(plan.slots) == 2
-    assert plan.slots[0].loopback_device == "routelix_to_gv_1"
-    assert plan.slots[1].capture_device == "routelix_from_gv_2.monitor"
-    assert plan.slots[0].pulse_source == "routelix_to_gv_1.monitor"
-    assert len(plan.queued_accounts) == 2
+    assert len(plan.slots) == 1
+    assert plan.max_agents == 1
+    assert plan.slots[0].email == "a1@example.com"
+    assert plan.slots[0].loopback_device == "routelix_to_gv"
+    assert plan.slots[0].capture_device == "routelix_from_gv.monitor"
+    assert plan.queued_accounts == []
     assert plan.slots[0].active_calls == 0
 
 

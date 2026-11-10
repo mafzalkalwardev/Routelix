@@ -198,6 +198,12 @@ def save_account(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("password"):
         merged["password_enc"] = _protect(str(payload["password"]))
     account = _normalize(merged)
+    if current is None and existing:
+        raise ValueError(
+            "Routelix uses one Google Voice account, Main line. Edit that account instead of adding another."
+        )
+    if not str(payload.get("name") or "").strip():
+        account["name"] = "Main line"
     if not account["email"]:
         raise ValueError("Google account email is required")
     if not account["profile_name"]:
