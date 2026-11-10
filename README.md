@@ -131,7 +131,7 @@ sudo certbot --nginx -d routelix.induswebagency.com
 sudo -u routelix bash deploy/linux/gv-login.sh sales_profile
 ```
 
-Then from a laptop, `ssh -L 6080:127.0.0.1:6080 <user>@<server>` and open `http://127.0.0.1:6080/vnc.html` to finish the Google Voice sign-in once. Copying an already signed-in Chromium profile (`python -m src.gv_session import-profile`) is the other supported path. A cookie file is best-effort and Google often rejects it.
+Then from a laptop, `ssh -L 6081:127.0.0.1:6081 <user>@<server>` and open `http://127.0.0.1:6081/vnc.html` to finish the Google Voice sign-in once. Routelix uses X display `:98` (`ROUTELIX_DISPLAY` in `.env`, or `DISPLAY` when that is unset). Display `:99` is laneora-chrome and is not used. VNC and noVNC default to ports 5902 and 6081. Copying an already signed-in Chromium profile (`python -m src.gv_session import-profile`) is the other supported path. A cookie file is best-effort and Google often rejects it.
 
 `deploy/linux/.env.example` lists every variable. The unit listens on `127.0.0.1:8787` with `MemoryMax=8G` and `Restart=always`. Full notes, including the Pulse/PipeWire route and what still cannot be headless, are in [deploy/linux/README.md](deploy/linux/README.md).
 

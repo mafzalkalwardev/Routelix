@@ -171,10 +171,33 @@ def test_linux_unit_exposes_xvfb_and_disables_chromium_sandbox():
     )
     assert "PrivateTmp=true" in unit
     assert "BindPaths=/tmp/.X11-unix" in unit
-    assert "Environment=DISPLAY=:99" in unit
+    assert "Environment=DISPLAY=:99" not in unit
+    assert "Environment=DISPLAY=:98" in unit
+    assert "Environment=ROUTELIX_VNC_PORT=5902" in unit
+    assert "Environment=ROUTELIX_NOVNC_PORT=6081" in unit
+    assert unit.index("Environment=DISPLAY=:98") < unit.index("EnvironmentFile=")
     assert "Environment=ROUTELIX_CHROMIUM_NO_SANDBOX=1" in unit
     assert unit.index("EnvironmentFile=") < unit.index("Environment=ROUTELIX_CHROMIUM_NO_SANDBOX=1")
     assert "NoNewPrivileges=true" in unit
+    script = (Path(__file__).resolve().parents[1] / "deploy/linux/gv-login.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "${ROUTELIX_DISPLAY:-${DISPLAY:-:98}}" in script
+    assert "${ROUTELIX_VNC_PORT:-5902}" in script
+    assert "${ROUTELIX_NOVNC_PORT:-6081}" in script
+
+
+def test_display_comes_from_env_and_defaults_to_98(monkeypatch):
+    from src.browser_launch import routelix_display
+
+    monkeypatch.delenv("ROUTELIX_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("ROUTELIX_SERVER", "1")
+    assert routelix_display() == ":98"
+    monkeypatch.setenv("DISPLAY", ":97")
+    assert routelix_display() == ":97"
+    monkeypatch.setenv("ROUTELIX_DISPLAY", ":98")
+    assert routelix_display() == ":98"
 
 
 def test_audio_daemon_starts_dbus_and_does_not_duplicate_sinks():

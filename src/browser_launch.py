@@ -125,6 +125,19 @@ def apply_browser(options) -> None:
         options.binary_location = binary
 
 
+def routelix_display() -> str:
+    """Xvfb screen for Chromium. :99 is laneora-chrome on the production host."""
+    named = os.getenv("ROUTELIX_DISPLAY", "").strip()
+    if named:
+        return named
+    current = os.getenv("DISPLAY", "").strip()
+    if current:
+        return current
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return ":98"
+    return ""
+
+
 def chromedriver_service():
     """A Selenium Service on Linux, or None so Windows keeps webdriver-manager."""
     if not sys.platform.startswith("linux"):
@@ -142,17 +155,9 @@ def chromedriver_service():
             env["PULSE_SINK"] = sink
         if source:
             env["PULSE_SOURCE"] = source
-    display = os.getenv("ROUTELIX_DISPLAY", "").strip()
+    display = routelix_display()
     if display:
         env["DISPLAY"] = display
-    elif not os.getenv("DISPLAY") and os.getenv("ROUTELIX_SERVER", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        # Headless does not need X. Headed Google sign-in uses the noVNC display.
-        env.setdefault("DISPLAY", ":99")
     path = find_chromedriver()
     if path:
         return Service(executable_path=path, env=env)

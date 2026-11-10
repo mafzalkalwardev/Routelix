@@ -73,11 +73,13 @@ sudo -u routelix bash /opt/routelix/deploy/linux/gv-login.sh sales_profile
 
 From your laptop:
 
+Display `:99` belongs to laneora-chrome. Routelix defaults to `:98`. Set `ROUTELIX_DISPLAY` in `.env` (or `DISPLAY` if `ROUTELIX_DISPLAY` is unset). `gv-login.sh` reads that value, then `DISPLAY`, then `:98`. VNC and noVNC default to `5902` and `6081` (`ROUTELIX_VNC_PORT`, `ROUTELIX_NOVNC_PORT`).
+
 ```bash
-ssh -L 6080:127.0.0.1:6080 <user>@<server>
+ssh -L 6081:127.0.0.1:6081 <user>@<server>
 ```
 
-Open `http://127.0.0.1:6080/vnc.html`, sign in at voice.google.com, and confirm the dial pad is visible. Stop the headed Chromium. Later live runs reuse `chrome_profiles/sales_profile` with `CHROME_HEADLESS=true`.
+Open `http://127.0.0.1:6081/vnc.html`, sign in at voice.google.com, and confirm the dial pad is visible. Stop the headed Chromium. Later live runs reuse `chrome_profiles/sales_profile` with `CHROME_HEADLESS=true`.
 
 **Copy a profile that is already signed in**
 
@@ -108,7 +110,7 @@ Two PipeWire issues block that playback until the deploy files are installed:
 
 `routelix-audio.service` starts a session D-Bus, then PipeWire, WirePlumber, and pipewire-pulse. It loads `routelix_to_gv` and `routelix_from_gv` only when those sink names are absent, and sets them as the default sink and the default source (`routelix_from_gv.monitor`).
 
-`routelix.service` keeps `PrivateTmp=true` and bind-mounts `/tmp/.X11-unix` so Chromium can open the Xvfb display (`DISPLAY=:99`). `NoNewPrivileges=true` blocks Chromium's setuid sandbox, so the unit sets `ROUTELIX_CHROMIUM_NO_SANDBOX=1`.
+`routelix.service` keeps `PrivateTmp=true` and bind-mounts `/tmp/.X11-unix` so Chromium can open Xvfb. The unit defaults `DISPLAY` to `:98` before `EnvironmentFile=`, so `.env` can set `ROUTELIX_DISPLAY` or `DISPLAY`. Do not point Routelix at `:99`; that screen is laneora-chrome. `NoNewPrivileges=true` blocks Chromium's setuid sandbox, so the unit sets `ROUTELIX_CHROMIUM_NO_SANDBOX=1`.
 
 A saved Windows device name is rewritten on Linux: `CABLE-A Input` and `CABLE Input` become `routelix_to_gv` (TTS playback, the VB-CABLE input). `CABLE-A Output` and `CABLE Output` become `routelix_from_gv.monitor` (call capture, the VB-CABLE output). Numbered per-agent sinks are left as they are.
 

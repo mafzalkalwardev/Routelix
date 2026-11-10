@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # One-time Google Voice sign-in on the server.
-# Binds noVNC to 127.0.0.1 only. From your laptop:
-#   ssh -L 6080:127.0.0.1:6080 <user>@<server>
-#   open http://127.0.0.1:6080/vnc.html
+# Binds noVNC to 127.0.0.1 only. Display :99 is laneora-chrome; Routelix uses :98.
+# From your laptop (ports come from ROUTELIX_VNC_PORT and ROUTELIX_NOVNC_PORT):
+#   ssh -L 6081:127.0.0.1:6081 <user>@<server>
+#   open http://127.0.0.1:6081/vnc.html
 # Sign in, then leave the Chromium window. The profile is reused by headless runs.
 set -euo pipefail
 APP_DIR="${ROUTELIX_APP_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 PROFILE_NAME="${1:-sales_profile}"
-DISPLAY_NUM="${ROUTELIX_DISPLAY:-:99}"
-VNC_PORT="${ROUTELIX_VNC_PORT:-5901}"
-NOVNC_PORT="${ROUTELIX_NOVNC_PORT:-6080}"
+DISPLAY_NUM="${ROUTELIX_DISPLAY:-${DISPLAY:-:98}}"
+VNC_PORT="${ROUTELIX_VNC_PORT:-5902}"
+NOVNC_PORT="${ROUTELIX_NOVNC_PORT:-6081}"
 export DISPLAY="$DISPLAY_NUM"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/routelix}"
 export PULSE_SERVER="${PULSE_SERVER:-unix:/run/routelix/pulse/native}"
