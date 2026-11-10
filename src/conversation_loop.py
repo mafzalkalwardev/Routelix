@@ -22,6 +22,7 @@ import difflib
 import numpy as np
 
 from src.audio_capture import AudioCapture
+from src.audio_scene import is_speech_audio, should_transcribe
 from src.call_session import CallSession, CallState
 from src.conversation_agent import ConversationAgent
 from src.greeting_library import GreetingLibrary
@@ -1022,11 +1023,7 @@ class ConversationLoop:
         if (self._vm_latest_transcript or "").strip() or self._stop_event.is_set():
             return
         try:
-            transcript = self.stt.transcribe(
-                segment,
-                samplerate=_SAMPLERATE,
-                prompt=self._stt_prompt,
-            )
+            transcript = self._transcribe_segment(segment, prompt=self._stt_prompt)
         except Exception as exc:
             logger.debug("[STT] opening classify failed: %s", exc)
             return
@@ -1077,6 +1074,18 @@ class ConversationLoop:
         while self._opening_samples > _OPENING_MAX_SAMPLES and self._opening_frames:
             dropped = self._opening_frames.pop(0)
             self._opening_samples -= int(dropped.size)
+
+    def _transcribe_segment(self, audio: np.ndarray, prompt: str | None = None) -> str:
+        """Transcribe speech. Noise is not sent to the model."""
+        samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if not should_transcribe(samples, _SAMPLERATE):
+            self._last_empty_stt_reason = "skipped non-speech audio"
+            logger.info("[STT] skipped non-speech audio (%.2fs)", samples.size / float(_SAMPLERATE))
+            return ""
+        kwargs = {"samplerate": _SAMPLERATE}
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        return self.stt.transcribe(samples, **kwargs)
 
     def _lock_human_pickup(self, reason: str, confidence: float = 0.85) -> None:
         """Treat the far side as a live person until a beep/keyword proves otherwise."""
@@ -1173,11 +1182,14 @@ class ConversationLoop:
         # A brief inbound burst right after answer is almost always a live "hello",
         # not a mailbox monologue. Lock human immediately so fingerprint matching
         # cannot race ahead of STT (which may be slow or fail).
+        # Keep the window short: a 2–2.5 s IVR prompt used to fit this lock.
+        # Noise that merely clears the energy VAD must not lock a person.
         if (
             not self._response_active.is_set()
             and not self._voicemail_detected
-            and 0.35 <= duration <= 2.5
+            and 0.28 <= duration <= 1.6
             and not VoicemailDetector.keyword_count(self._vm_latest_transcript)
+            and is_speech_audio(segment, _SAMPLERATE)
         ):
             self._lock_human_pickup(
                 f"short inbound burst {duration:.2f}s before opening",
@@ -1219,7 +1231,7 @@ class ConversationLoop:
         if self._voicemail_detected or self._stop_event.is_set():
             return
         try:
-            transcript = (self.stt.transcribe(audio, samplerate=_SAMPLERATE) or "").strip()
+            transcript = (self._transcribe_segment(audio) or "").strip()
         except Exception as exc:
             logger.warning("[VM] early STT failed: %s", exc)
             return
@@ -1358,12 +1370,7 @@ class ConversationLoop:
             )
 
             try:
-                transcript = self.stt.transcribe(
-
-                    audio_segment,
-                    samplerate=_SAMPLERATE,
-                    prompt=dynamic_prompt,
-                )
+                transcript = self._transcribe_segment(audio_segment, prompt=dynamic_prompt)
 
             except Exception as exc:
                 self._last_empty_stt_reason = f"exception: {exc}"

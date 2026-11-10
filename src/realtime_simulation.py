@@ -124,9 +124,15 @@ class ScriptedAudioCapture:
         for idx in range(frames):
             if self._stop.is_set():
                 return
-            tone = np.sin(2 * np.pi * (220 + idx) * t).astype(np.float32)
+            # Several harmonics, not a pure tone, so the speech gate accepts it.
+            f0 = 140.0 + (idx % 7) * 3.0
+            tone = np.zeros(self.frame_size, dtype=np.float32)
+            for harmonic in range(1, 6):
+                tone += np.float32(0.5 / harmonic) * np.sin(
+                    2 * np.pi * f0 * harmonic * t
+                ).astype(np.float32)
             noise = (np.random.rand(self.frame_size).astype(np.float32) - 0.5) * 0.01
-            self._put((tone * 0.08 + noise).astype(np.float32))
+            self._put((tone * 0.12 + noise).astype(np.float32))
             time.sleep(self.frame_ms / 1000.0)
 
 
@@ -219,6 +225,7 @@ def run_simulated_conversation(logger: logging.Logger | None = None) -> dict:
         silence_trigger_frames=8,
         max_speech_seconds=5.0,
         pre_speech_pad_frames=2,
+        speech_like_gate=True,
     )
     loop = ConversationLoop(
         capture_device_hint="simulated",

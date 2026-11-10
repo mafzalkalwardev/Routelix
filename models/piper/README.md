@@ -17,6 +17,10 @@ The current local test voice is `en_US-lessac-medium`, downloaded from the
 `rhasspy/piper-voices` Hugging Face repository. Keep the `.onnx` and matching
 `.onnx.json` files together; both are required at runtime.
 
+`PIPER_LENGTH_SCALE`, `PIPER_NOISE_SCALE`, and `PIPER_NOISE_W_SCALE` still apply.
+The renderer also pauses at commas and long clauses. Questions are spoken a
+little slower than the base length scale.
+
 Download them with:
 
 ```powershell

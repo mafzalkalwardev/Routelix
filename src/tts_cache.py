@@ -21,6 +21,17 @@ from typing import Dict, Optional
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
+
+def _edge_markup(text: str) -> str:
+    """Prefer clause-level SSML. Fall back to the original line if markup fails."""
+    try:
+        from src.speech_style import to_edge_ssml
+
+        markup = to_edge_ssml(text)
+        return markup or text
+    except Exception:
+        return text
+
 # Common phrases to pre-generate at startup.
 # Keep this list short (< 20 entries) so warmup completes quickly.
 _WARMUP_PHRASES = [
@@ -102,7 +113,7 @@ class TTSCache:
             logger.warning("[TTS_CACHE] edge-tts not installed; phrase not cached")
             return False
         try:
-            communicate = edge_tts.Communicate(text, self.tts_voice)
+            communicate = edge_tts.Communicate(_edge_markup(text), self.tts_voice)
             buf = io.BytesIO()
 
             async def _collect() -> bytes:
@@ -165,7 +176,7 @@ class TTSCache:
                 if key in self._cache:
                     continue
             try:
-                communicate = edge_tts.Communicate(phrase, self.tts_voice)
+                communicate = edge_tts.Communicate(_edge_markup(phrase), self.tts_voice)
                 buf = io.BytesIO()
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":

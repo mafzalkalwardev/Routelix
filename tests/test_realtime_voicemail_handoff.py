@@ -196,7 +196,11 @@ def test_short_inbound_burst_locks_human_before_fingerprint_can_drop():
 
     import numpy as np
 
-    segment = np.zeros(int(16000 * 0.72), dtype=np.float32)
+    # A short voiced burst, not silence or noise. Noise must not lock a person.
+    t = np.arange(int(16000 * 0.72)) / 16000.0
+    segment = np.zeros(t.shape, dtype=np.float32)
+    for harmonic in range(1, 8):
+        segment += np.float32(0.2 / harmonic) * np.sin(2 * np.pi * 150 * harmonic * t).astype(np.float32)
     loop._handle_speech_segment(segment, ended_monotonic=10.0)
 
     assert loop._vm_human_detected is True

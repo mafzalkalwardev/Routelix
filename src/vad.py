@@ -50,6 +50,12 @@ class VADConfig:
     # to fall out of speech (reduces mid-word choppping on quiet speakers).
     hysteresis_factor: float = 0.70
 
+    # When True, loud noise cannot open an utterance. Continuation still uses
+    # energy so consonants are not chopped. Default stays off so older tests
+    # that used noise bursts as stand-in speech keep their contract; the call
+    # path turns it on.
+    speech_like_gate: bool = False
+
 
 class EnergyVAD:
     """Stateful single-channel voice activity detector.
@@ -91,6 +97,11 @@ class EnergyVAD:
             effective_threshold = self.config.speech_threshold
 
         is_speech = rms >= effective_threshold
+        if is_speech and not self._in_speech and self.config.speech_like_gate:
+            from src.audio_scene import is_speech_frame
+
+            if not is_speech_frame(frame, self.config.samplerate):
+                is_speech = False
 
         if not self._in_speech:
             self._ring.append(frame)
