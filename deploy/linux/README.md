@@ -150,9 +150,9 @@ Calls on the Main line wait `ACCOUNT_MIN_GAP_SECONDS` (45) and stop after `ACCOU
 | 2 | `tony_2`, cloned from `tony` when the folder is missing | `routelix_to_gv_2` / `routelix_from_gv_2.monitor` | `:98`, separate window | 5912 / 6092 |
 | N | `tony_N` | `routelix_to_gv_N` / `routelix_from_gv_N.monitor` | `:98`, or `:100+` if `ROUTELIX_SEPARATE_DISPLAYS=1` | 5910+N / 6090+N |
 
-These ports are not 5901, 5902, 6080, or 6081. Display `:99` is laneora-chrome and is not used. A profile without a session needs one sign-in through the existing Connect flow. Do not delete `chrome_profiles/tony` during a deploy.
+These ports are not 5901, 5902, 6080, or 6081. Display `:99` is laneora-chrome and is not used. Line 1 is ready when `chrome_profiles/tony/.gv_session_ok` exists. The older `.routelix_session` file still counts. Startup copies tony into `tony_2` through `tony_N`. The lines page can clone again while that Chrome is closed, or open the profile on `:98` for a sign-in. Do not delete `chrome_profiles/tony` during a deploy.
 
-The audio service creates the numbered sinks when `ROUTELIX_LINES` is set. On a 4-core host with 1 core reserved, the measured sustainable count is 4. The lines page lets an admin arm up to 7 and shows a warning past that count. This measurement is the x86 per-call cost (about 0.7 core and 500 MB for Chromium plus the worker) scaled for the ARM host. It is not a seven-way live call captured on the A1 box.
+`routelix-audio.service` loads `.env`, so `ROUTELIX_LINES` creates the numbered sinks. On a 4-core host with 1 core reserved, the measured sustainable count is 4. The lines page lets an admin arm up to 7 and shows a warning past that count. This measurement is the x86 per-call cost (about 0.7 core and 500 MB for Chromium plus the worker) scaled for the ARM host. It is not a seven-way live call captured on the A1 box.
 
 ## 7c. Moving this build onto /opt/routelix
 

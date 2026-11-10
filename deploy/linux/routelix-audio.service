@@ -10,6 +10,9 @@ Group=routelix
 RuntimeDirectory=routelix
 RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run/routelix
+# ROUTELIX_LINES lives in .env. Without this file the daemon only builds the
+# unnumbered sinks and tony_2..tony_7 have nowhere to play.
+EnvironmentFile=-@APP_DIR@/.env
 ExecStart=@APP_DIR@/deploy/linux/audio-daemon.sh
 Restart=always
 RestartSec=3

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 from src.capacity import configured_line_count, sustainable_lines
@@ -82,25 +83,178 @@ def _profiles_root() -> Path:
     return runtime_base() / "chrome_profiles"
 
 
+# Google Voice login writes .gv_session_ok. .routelix_session is the older name.
+SESSION_MARKERS = (".gv_session_ok", ".routelix_session")
+
+
 def session_ready(name: str) -> bool:
-    return (_profiles_root() / name / ".routelix_session").is_file()
+    folder = _profiles_root() / name
+    return any((folder / marker).is_file() for marker in SESSION_MARKERS)
+
+
+def profile_in_use(name: str) -> bool:
+    """True when a Chromium process already has this profile open."""
+    needle = str((_profiles_root() / name).resolve())
+    try:
+        import psutil
+    except ImportError:
+        return False
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        info = proc.info or {}
+        command = " ".join(info.get("cmdline") or [])
+        label = f"{info.get('name') or ''} {command}".lower()
+        if needle in command and "chrom" in label:
+            return True
+    return False
+
+
+def _copy_from_tony(dest: Path) -> None:
+    source = _profiles_root() / "tony"
+    if not source.is_dir():
+        raise RuntimeError("chrome_profiles/tony is not on this machine")
+    shutil.copytree(
+        source,
+        dest,
+        ignore=shutil.ignore_patterns("SingletonLock", "SingletonCookie", "SingletonSocket"),
+    )
 
 
 def ensure_profile(index: int) -> str:
     """Reuse tony. Clone it into tony_N when that folder is missing."""
     name = profile_name(index)
-    root = _profiles_root()
-    dest = root / name
+    dest = _profiles_root() / name
     if dest.exists():
         return name
-    source = root / "tony"
-    if index > 1 and source.is_dir():
-        shutil.copytree(
-            source,
-            dest,
-            ignore=shutil.ignore_patterns("SingletonLock", "SingletonCookie", "SingletonSocket"),
-        )
+    if index > 1 and (_profiles_root() / "tony").is_dir():
+        _copy_from_tony(dest)
     return name
+
+
+def ensure_line_profiles(count: int | None = None) -> list[str]:
+    """Create any missing tony_N folders up to the armed line count."""
+    count = line_count() if count is None else max(1, min(MAX_LINES, int(count)))
+    return [ensure_profile(index) for index in range(1, count + 1)]
+
+
+def reclone_profile(index: int) -> str:
+    """Replace tony_N with a fresh copy of tony. Refuses while Chrome has it open."""
+    if index < 2:
+        raise ValueError("Line 1 is chrome_profiles/tony. Clone starts at line 2.")
+    name = profile_name(index)
+    if profile_in_use(name) or profile_in_use("tony"):
+        raise RuntimeError("Close Chrome for tony and this line before cloning.")
+    dest = _profiles_root() / name
+    if dest.exists():
+        shutil.rmtree(dest)
+    _copy_from_tony(dest)
+    return name
+
+
+def signin_command(index: int) -> list[str]:
+    """Chromium command that opens this profile on display :98."""
+    from src.browser_launch import find_chromium_binary
+
+    binary = find_chromium_binary()
+    if not binary:
+        raise RuntimeError("Chromium was not found")
+    name = profile_name(index)
+    profile = _profiles_root() / name
+    position = f"{60 * (index - 1)},{40 * (index - 1)}"
+    command = [
+        binary,
+        f"--user-data-dir={profile}",
+        f"--window-position={position}",
+        "--no-first-run",
+        "--disable-dev-shm-usage",
+        "--use-fake-ui-for-media-stream",
+        "--autoplay-policy=no-user-gesture-required",
+        "https://voice.google.com",
+    ]
+    if os.getenv("ROUTELIX_CHROMIUM_NO_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"}:
+        command[1:1] = ["--no-sandbox", "--disable-setuid-sandbox"]
+    return command
+
+
+def _display_is_up(display: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", f"Xvfb {display}"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+def _ensure_signin_display(index: int) -> None:
+    """Xvfb :98 plus this line's localhost VNC. :99 is left alone."""
+    display = ":98"
+    if not _display_is_up(display):
+        if shutil.which("Xvfb"):
+            subprocess.Popen(
+                ["Xvfb", display, "-screen", "0", "1280x900x24"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+    vnc, novnc = line_ports(index)
+    if shutil.which("x11vnc"):
+        subprocess.Popen(
+            [
+                "x11vnc",
+                "-display",
+                display,
+                "-localhost",
+                "-nopw",
+                "-rfbport",
+                str(vnc),
+                "-forever",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    if shutil.which("websockify"):
+        subprocess.Popen(
+            [
+                "websockify",
+                "--web",
+                "/usr/share/novnc",
+                f"127.0.0.1:{novnc}",
+                f"127.0.0.1:{vnc}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def open_signin(index: int) -> dict:
+    """Open this profile's Chromium on :98 so an admin can sign in through VNC."""
+    if index < 1 or index > MAX_LINES:
+        raise ValueError("Line is out of range")
+    name = profile_name(index)
+    if profile_in_use(name):
+        raise RuntimeError("Chrome is already open for this profile.")
+    ensure_profile(index)
+    _ensure_signin_display(index)
+    env = os.environ.copy()
+    env["DISPLAY"] = ":98"
+    subprocess.Popen(
+        signin_command(index),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    vnc, novnc = line_ports(index)
+    return {
+        "profile": name,
+        "display": ":98",
+        "vnc_port": vnc,
+        "novnc_port": novnc,
+    }
 
 
 def line_plan(count: int | None = None) -> list[dict]:
@@ -109,7 +263,7 @@ def line_plan(count: int | None = None) -> list[dict]:
     for index in range(1, count + 1):
         vnc, novnc = line_ports(index)
         name = profile_name(index)
-        signed = session_ready(name) or (index == 1 and session_ready("tony"))
+        signed = session_ready(name)
         rows.append({
             "index": index,
             "profile_name": name,
@@ -123,7 +277,7 @@ def line_plan(count: int | None = None) -> list[dict]:
             "pulse_sink": f"routelix_from_gv_{index}",
             "pulse_source": f"routelix_to_gv_{index}.monitor",
             "signed_in": signed,
-            "status": "idle" if signed else "needs_signin",
+            "status": "ready" if signed else "needs_signin",
             "warning": capacity_warning(count),
         })
     return rows

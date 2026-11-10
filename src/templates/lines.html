@@ -26,7 +26,7 @@
 <div class="panel">
   <table class="data-table">
     <thead>
-      <tr><th>Line</th><th>Profile</th><th>Status</th><th>Display</th><th>Audio</th><th>VNC</th><th>Account</th></tr>
+      <tr><th>Line</th><th>Profile</th><th>Status</th><th>Display</th><th>Audio</th><th>VNC</th><th>Account</th><th></th></tr>
     </thead>
     <tbody>
       {% for line in lines %}
@@ -38,11 +38,17 @@
         <td>{{ line.loopback_device }} / {{ line.capture_device }}</td>
         <td>{{ line.vnc_port }} / {{ line.novnc_port }}</td>
         <td>{{ line.gv_account }}</td>
+        <td>
+          {% if line.index > 1 %}
+          <button class="btn" type="button" onclick="cloneLine({{ line.index }})">Clone from tony</button>
+          {% endif %}
+          <button class="btn" type="button" onclick="openSignin({{ line.index }})">Open sign-in</button>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
-  <p class="field-hint">Line 1 reuses chrome_profiles/tony when that session is already there. Extra profiles are cloned from tony on first prepare, or they need one sign-in. The laneora display is not used. These VNC ports stay off 5901 and 6080. Set the same ROUTELIX_LINES value in .env and restart routelix-audio so the numbered sinks exist.</p>
+  <p class="field-hint">Line 1 is ready when chrome_profiles/tony contains .gv_session_ok. Startup clones tony into tony_2 and the later profiles. Clone from tony again only while that Chrome is closed. Open sign-in puts the profile on display :98. The laneora display is not used. These VNC ports stay off 5901 and 6080. routelix-audio reads ROUTELIX_LINES from .env and creates the numbered sinks.</p>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -58,5 +64,18 @@ document.getElementById("lineForm").addEventListener("submit", async (event) => 
   document.getElementById("lineMsg").textContent = data.ok ? (data.warning || "Saved.") : (data.error || "Not saved");
   if (data.ok) location.reload();
 });
+async function cloneLine(index) {
+  const response = await fetch("/admin/lines/" + index + "/clone", {method: "POST"});
+  const data = await response.json();
+  document.getElementById("lineMsg").textContent = data.ok ? ("Cloned " + data.profile) : (data.error || "Not cloned");
+  if (data.ok) location.reload();
+}
+async function openSignin(index) {
+  const response = await fetch("/admin/lines/" + index + "/signin", {method: "POST"});
+  const data = await response.json();
+  document.getElementById("lineMsg").textContent = data.ok
+    ? ("Chromium is on " + data.display + ". noVNC port " + data.novnc_port)
+    : (data.error || "Sign-in did not open");
+}
 </script>
 {% endblock %}

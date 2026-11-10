@@ -1,5 +1,6 @@
 """Admin CRM, Ashley's seed, DNC, and one-account Chrome lines."""
 import json
+from pathlib import Path
 
 from src.auth import verify_password
 
@@ -72,8 +73,15 @@ def test_lines_share_one_account_and_warn_past_capacity(tmp_path, monkeypatch):
     monkeypatch.setattr("src.gv_lines._profiles_root", lambda: tmp_path)
     (tmp_path / "tony").mkdir()
     (tmp_path / "tony" / "Cookie").write_text("keep", encoding="utf-8")
-    from src.gv_lines import capacity_warning, ensure_profile, line_plan
+    (tmp_path / "tony" / ".gv_session_ok").write_text("ok", encoding="utf-8")
+    from src.gv_lines import capacity_warning, ensure_line_profiles, ensure_profile, line_plan, reclone_profile
 
+    ready = line_plan(1)
+    assert ready[0]["signed_in"] is True
+    assert ready[0]["status"] == "ready"
+    names = ensure_line_profiles(3)
+    assert names == ["tony", "tony_2", "tony_3"]
+    assert (tmp_path / "tony_3" / ".gv_session_ok").is_file()
     plan = line_plan()
     assert len(plan) == 7
     assert {row["gv_account"] for row in plan} == {"Main line"}
@@ -86,3 +94,64 @@ def test_lines_share_one_account_and_warn_past_capacity(tmp_path, monkeypatch):
     assert (tmp_path / "tony_2" / "Cookie").read_text(encoding="utf-8") == "keep"
     monkeypatch.setenv("ROUTELIX_SEPARATE_DISPLAYS", "1")
     assert line_plan(1)[0]["display"] == ":100"
+    (tmp_path / "tony_2" / "Cookie").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr("src.gv_lines.profile_in_use", lambda name: name == "tony_2")
+    try:
+        reclone_profile(2)
+    except RuntimeError as exc:
+        assert "Close Chrome" in str(exc)
+    else:
+        raise AssertionError("clone ran while Chrome was open")
+    monkeypatch.setattr("src.gv_lines.profile_in_use", lambda name: False)
+    assert reclone_profile(2) == "tony_2"
+    assert (tmp_path / "tony_2" / "Cookie").read_text(encoding="utf-8") == "keep"
+
+
+def test_old_session_marker_still_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.gv_lines._profiles_root", lambda: tmp_path)
+    folder = tmp_path / "tony"
+    folder.mkdir()
+    (folder / ".routelix_session").write_text("ok", encoding="utf-8")
+    from src.gv_lines import line_plan, session_ready
+
+    assert session_ready("tony") is True
+    monkeypatch.setenv("ROUTELIX_LINES", "1")
+    monkeypatch.setenv("ROUTELIX_DISPLAY", ":98")
+    assert line_plan(1)[0]["status"] == "ready"
+
+
+def test_signin_opens_the_profile_on_display_98(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.gv_lines._profiles_root", lambda: tmp_path)
+    (tmp_path / "tony").mkdir()
+    monkeypatch.setattr("src.browser_launch.find_chromium_binary", lambda: "/usr/bin/chromium")
+    from src.gv_lines import signin_command
+
+    command = signin_command(2)
+    assert command[0] == "/usr/bin/chromium"
+    assert f"--user-data-dir={tmp_path / 'tony_2'}" in command
+    assert "https://voice.google.com" in command
+    assert ":99" not in " ".join(command)
+    launched = {}
+
+    def fake_popen(cmd, env=None, **kwargs):
+        launched["display"] = (env or {}).get("DISPLAY")
+        launched["cmd"] = cmd
+        return object()
+
+    monkeypatch.setattr("src.gv_lines._ensure_signin_display", lambda index: None)
+    monkeypatch.setattr("src.gv_lines.profile_in_use", lambda name: False)
+    monkeypatch.setattr("src.gv_lines.subprocess.Popen", fake_popen)
+    from src.gv_lines import open_signin
+
+    opened = open_signin(2)
+    assert launched["display"] == ":98"
+    assert opened["display"] == ":98"
+    assert opened["vnc_port"] == 5912
+
+
+def test_audio_service_loads_env_for_numbered_sinks():
+    text = (Path(__file__).resolve().parents[1] / "deploy/linux/routelix-audio.service").read_text(
+        encoding="utf-8"
+    )
+    assert "EnvironmentFile=-@APP_DIR@/.env" in text
+    assert text.index("Environment=XDG_RUNTIME_DIR=/run/routelix") < text.index("EnvironmentFile=")

@@ -1102,7 +1102,34 @@ async def admin_lines_set(request: Request):
     if count < 1 or count > 7:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Lines must be from 1 to 7"})
     count = set_line_count(count)
+    from src.gv_lines import ensure_line_profiles
+
+    ensure_line_profiles(count)
     return {"ok": True, "lines": count, "warning": capacity_warning(count)}
+
+
+@app.post("/admin/lines/{index}/clone")
+async def admin_line_clone(index: int, request: Request):
+    _require_admin(request)
+    from src.gv_lines import reclone_profile
+
+    try:
+        name = reclone_profile(index)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "profile": name}
+
+
+@app.post("/admin/lines/{index}/signin")
+async def admin_line_signin(index: int, request: Request):
+    _require_admin(request)
+    from src.gv_lines import open_signin
+
+    try:
+        opened = open_signin(index)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, **opened}
 
 
 @app.get("/my", response_class=HTMLResponse)
@@ -2239,6 +2266,12 @@ async def _web_startup() -> None:
             ensure_linux_call_audio()
         except Exception:
             logger.exception("Linux audio sinks were not created at startup")
+    try:
+        from src.gv_lines import ensure_line_profiles
+
+        ensure_line_profiles()
+    except Exception:
+        logger.exception("Chrome line profiles were not prepared")
 
 
 def main() -> None:
