@@ -265,10 +265,14 @@ class GoogleVoiceBrowser:
         profile_name: str = "sales_profile",
         headless: bool = False,
         avoid_page_reload: bool = True,
+        pulse_sink: str = "",
+        pulse_source: str = "",
     ):
         self.profile_dir = BASE_DIR / "chrome_profiles" / profile_name
         self.headless = headless
         self.avoid_page_reload = avoid_page_reload
+        self.pulse_sink = pulse_sink
+        self.pulse_source = pulse_source
         self.driver: Optional[webdriver.Chrome] = None
 
     # ------------------------------------------------------------------
@@ -308,7 +312,13 @@ class GoogleVoiceBrowser:
             opts.add_argument("--use-fake-ui-for-media-stream")
             opts.add_argument("--autoplay-policy=no-user-gesture-required")
 
-        self.driver = _create_chrome_driver(opts)
+        from src.browser_launch import pulse_route
+
+        token = pulse_route.set((getattr(self, "pulse_sink", "") or "", getattr(self, "pulse_source", "") or ""))
+        try:
+            self.driver = _create_chrome_driver(opts)
+        finally:
+            pulse_route.reset(token)
 
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"

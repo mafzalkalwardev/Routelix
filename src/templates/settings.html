@@ -18,7 +18,7 @@
 
   <div class="panel">
     <div class="panel-header"><h3 class="panel-title">Google Voice Accounts</h3></div>
-    <p class="field-hint" style="margin-bottom:1rem">Each enabled account gets its own persistent Chrome profile and calling worker. Passwords are encrypted for this Windows user and are never returned to the page. Google verification, MFA, or CAPTCHA must be completed in the opened Chrome window.</p>
+    <p class="field-hint" style="margin-bottom:1rem">Each enabled account is one live call, with its own Chromium profile. Leave the audio fields blank to assign <code>routelix_to_gv_&lt;n&gt;</code> and <code>routelix_from_gv_&lt;n&gt;.monitor</code>. Connect runs the existing sign-in and stops if Google asks for a challenge. The dashboard admits only as many accounts as the server can run at once.</p>
     <div id="accountRows"></div>
     <div class="form-grid" style="margin-top:1rem">
       <input type="hidden" id="gvId" />
@@ -26,8 +26,8 @@
       <div class="form-group"><label>Google Email</label><input id="gvEmail" type="email" autocomplete="username" /></div>
       <div class="form-group"><label>Password</label><input id="gvPassword" type="password" autocomplete="current-password" placeholder="Leave blank to keep saved password" /></div>
       <div class="form-group"><label>Chrome Profile</label><input id="gvProfile" type="text" placeholder="campaign_line_1" /></div>
-      <div class="form-group"><label>Loopback Device</label><input id="gvLoopback" type="text" placeholder="CABLE-A Input" /></div>
-      <div class="form-group"><label>Capture Device</label><input id="gvCapture" type="text" placeholder="CABLE-A Output" /></div>
+      <div class="form-group"><label>Loopback Device</label><input id="gvLoopback" type="text" placeholder="routelix_to_gv_1" /></div>
+      <div class="form-group"><label>Capture Device</label><input id="gvCapture" type="text" placeholder="routelix_from_gv_1.monitor" /></div>
       <div class="form-group"><label class="check-row"><input id="gvEnabled" type="checkbox" checked /> Enabled for calling</label></div>
     </div>
     <div class="form-actions">

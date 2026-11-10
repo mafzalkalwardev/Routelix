@@ -1,44 +1,69 @@
-"""How many live calls one Routelix server can place.
+"""Safe concurrent agents on a shared 4 OCPU / 24 GB ARM host.
 
-Google Voice in the browser is one number and one call panel. A second tab,
-profile, or Selenium session on that same account does not create a second
-live call: the number is already busy, or the UI steals the single call.
-Concurrency above one call needs another phone line. This module does not
-add that.
+One Google Voice number still carries one live call. Concurrency comes from
+giving each agent its own account. The planner then caps how many of those
+accounts may be on a call at once.
 
-The 24 GB figure is a RAM budget from process sizes measured on a headless
-Linux host (PipeWire plus one Python interpreter) plus the resident size of
-the CPU models the server actually loads. It is not a count of calls placed.
+Defaults reserve MailForge and MongoDB (~2 GB) plus a future Ollama fleet
+(6 GB and 1 core). Override with ROUTELIX_RESERVED_RAM_GB and
+ROUTELIX_RESERVED_CORES. MAX_AGENTS=auto uses this planner. A positive
+integer caps it further.
+
+CPU, not RAM, is the limit. On this x86_64 host (4 vCPU), faster-whisper int8
+with 1 thread transcribed 8 seconds of audio in 0.30 s for tiny (26x realtime)
+and 0.51 s for base (16x realtime). Ampere Altra N1 cores are treated as 0.6
+of that result (ROUTELIX_ARM_STT_SCALE). Short utterances still finish well
+under a second on one core, so speech-to-text is not what fills the CPUs.
+Chromium's WebRTC thread is. About 0.7 core per live call keeps the audio
+thread from stalling when several calls transcribe at once. Three cores left
+after the Ollama reservation therefore admit 4 agents. RAM alone would admit
+many more.
 """
 from __future__ import annotations
 
 import os
 
-# voice.google.com exposes one active call per number.
 GOOGLE_VOICE_CONCURRENT_CALLS = 1
 
-# Resident sizes observed while bringing up the headless audio path, plus the
-# published working set of the CPU models selected in deploy/linux/.env.example
-# (faster-whisper base int8, Piper lessac, one Chromium). Rounded up.
-# RSS of pipewire + pipewire-pulse + wireplumber on a headless Linux host: ~42 MB.
-_MEASURED_PIPEWIRE_AND_HELPERS_MB = 42
-_MEASURED_PYTHON_INTERPRETER_MB = 45
-_CHROMIUM_RSS_MB = 450
-_WHISPER_BASE_INT8_MB = 250
-_PIPER_VOICE_MB = 80
-_AGENT_WORKING_SET_MB = 120
+# faster-whisper int8, 1 thread, 8 s of audio, measured on this 4-vCPU Xeon.
+WHISPER_TINY_RTF = 26.5
+WHISPER_BASE_RTF = 15.7
+# Neoverse N1 versus that Xeon vCPU for int8 whisper. Conservative.
+DEFAULT_ARM_STT_SCALE = 0.6
 
-AGENT_RSS_MB = (
-    _MEASURED_PIPEWIRE_AND_HELPERS_MB
-    + _MEASURED_PYTHON_INTERPRETER_MB
-    + _CHROMIUM_RSS_MB
-    + _WHISPER_BASE_INT8_MB
-    + _PIPER_VOICE_MB
-    + _AGENT_WORKING_SET_MB
-)
+# Incremental cost of one live agent. Model weights are shared, not copied.
+CHROMIUM_MB = 400
+AGENT_PROCESS_MB = 100
+# Shared once:
+WHISPER_TINY_MB = 150
+WHISPER_BASE_MB = 280
+PIPER_MB = 70
+LLM_1_5B_Q4_MB = 1100
+PIPEWIRE_MB = 42
+OS_AND_NGINX_MB = 700
 
-# Leave this much RAM for the OS, nginx, and the audio daemon.
-_RESERVED_RAM_GB = 2.0
+# WebRTC plus a whisper burst without missing audio.
+CORES_PER_LIVE_CALL = 0.7
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def google_voice_concurrent_calls() -> int:
@@ -46,37 +71,120 @@ def google_voice_concurrent_calls() -> int:
     return GOOGLE_VOICE_CONCURRENT_CALLS
 
 
-def agent_rss_mb() -> int:
-    return AGENT_RSS_MB
+def reserved_ram_gb() -> float:
+    """MailForge/MongoDB (~2 GB) plus the Ollama reservation (6 GB)."""
+    return max(0.0, _float_env("ROUTELIX_RESERVED_RAM_GB", 8.0))
 
 
-def theoretical_agents(ram_gb: float | None = None) -> int:
-    """How many isolated agents would fit if each had its own phone line.
+def reserved_cores() -> float:
+    return max(0.0, _float_env("ROUTELIX_RESERVED_CORES", 1.0))
 
-    The default budget is the 4 OCPU / 24 GB host. The effective live-call
-    cap stays at one until another number exists.
-    """
-    if ram_gb is None:
-        raw = os.getenv("ROUTELIX_RAM_GB", "24").strip() or "24"
-        try:
-            ram_gb = float(raw)
-        except ValueError:
-            ram_gb = 24.0
-    usable_mb = max(0.0, (float(ram_gb) - _RESERVED_RAM_GB) * 1024.0)
-    if AGENT_RSS_MB <= 0:
+
+def host_ram_gb() -> float:
+    return max(1.0, _float_env("ROUTELIX_RAM_GB", 24.0))
+
+
+def host_cores() -> float:
+    return max(1.0, _float_env("ROUTELIX_CPU_COUNT", 4.0))
+
+
+def stt_model() -> str:
+    return os.getenv("STT_LOCAL_MODEL", "tiny").strip().lower() or "tiny"
+
+
+def stt_rtf() -> float:
+    """Realtime factor on one Ampere-class core after the measured x86 scale."""
+    scale = _float_env("ROUTELIX_ARM_STT_SCALE", DEFAULT_ARM_STT_SCALE)
+    base = WHISPER_TINY_RTF if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_RTF
+    return max(1.0, base * scale)
+
+
+def per_agent_mb() -> int:
+    return CHROMIUM_MB + AGENT_PROCESS_MB
+
+
+def shared_mb() -> int:
+    whisper = WHISPER_TINY_MB if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_MB
+    return whisper + PIPER_MB + LLM_1_5B_Q4_MB + PIPEWIRE_MB + OS_AND_NGINX_MB
+
+
+def ram_agent_limit() -> int:
+    usable_mb = host_ram_gb() * 1024.0 - reserved_ram_gb() * 1024.0 - shared_mb()
+    if per_agent_mb() <= 0:
         return 1
-    return max(1, int(usable_mb // AGENT_RSS_MB))
+    return max(1, int(usable_mb // per_agent_mb()))
 
 
-def capacity_report(ram_gb: float | None = None) -> str:
-    agents = theoretical_agents(ram_gb)
+def cpu_agent_limit() -> int:
+    free = host_cores() - reserved_cores()
+    if free <= 0:
+        return 1
+    return max(1, int(free // CORES_PER_LIVE_CALL))
+
+
+def max_agents() -> int:
+    """Safe simultaneous agents. MAX_AGENTS=auto, or a positive cap."""
+    raw = os.getenv("MAX_AGENTS", "auto").strip().lower()
+    planned = min(ram_agent_limit(), cpu_agent_limit())
+    if raw in {"", "auto"}:
+        return max(1, planned)
+    try:
+        requested = int(raw)
+    except ValueError:
+        return max(1, planned)
+    if requested < 1:
+        return 1
+    return min(requested, planned)
+
+
+def bottleneck() -> str:
+    if cpu_agent_limit() <= ram_agent_limit():
+        return "cpu"
+    return "ram"
+
+
+def capacity_report() -> str:
+    kind = bottleneck()
     return (
-        f"One Google Voice number supports {GOOGLE_VOICE_CONCURRENT_CALLS} live call. "
-        f"Each agent is about {AGENT_RSS_MB} MB "
-        f"(Chromium {_CHROMIUM_RSS_MB} MB, faster-whisper base int8 {_WHISPER_BASE_INT8_MB} MB, "
-        f"Piper {_PIPER_VOICE_MB} MB, interpreter and helpers "
-        f"{_MEASURED_PYTHON_INTERPRETER_MB + _MEASURED_PIPEWIRE_AND_HELPERS_MB} MB, "
-        f"conversation working set {_AGENT_WORKING_SET_MB} MB). "
-        f"A {ram_gb or os.getenv('ROUTELIX_RAM_GB', '24')} GB server could run about {agents} "
-        f"such agents if each had its own phone line. This installation dials one line."
+        f"Host {host_cores():.0f} cores / {host_ram_gb():.0f} GB, "
+        f"reserving {reserved_cores():.0f} core and {reserved_ram_gb():.0f} GB "
+        f"(MailForge/MongoDB and Ollama). "
+        f"One Google Voice account is {GOOGLE_VOICE_CONCURRENT_CALLS} live call. "
+        f"Each extra agent is about {per_agent_mb()} MB "
+        f"(Chromium {CHROMIUM_MB} MB, worker {AGENT_PROCESS_MB} MB). "
+        f"Shared once: whisper {WHISPER_TINY_MB if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_MB} MB, "
+        f"Piper {PIPER_MB} MB, local LLM {LLM_1_5B_Q4_MB} MB, "
+        f"PipeWire {PIPEWIRE_MB} MB, OS/nginx {OS_AND_NGINX_MB} MB. "
+        f"RAM would allow {ram_agent_limit()} agents. "
+        f"CPU allows {cpu_agent_limit()} "
+        f"({CORES_PER_LIVE_CALL} core per live call on the cores left after the reservation). "
+        f"faster-whisper {stt_model()} int8, 1 thread, measured {WHISPER_TINY_RTF if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_RTF:.1f}x "
+        f"realtime on x86; estimated {stt_rtf():.1f}x on one ARM core. "
+        f"The limiter is {kind}. Safe simultaneous agents: {max_agents()}."
     )
+
+
+def component_budget() -> dict:
+    return {
+        "host_cores": host_cores(),
+        "host_ram_gb": host_ram_gb(),
+        "reserved_cores": reserved_cores(),
+        "reserved_ram_gb": reserved_ram_gb(),
+        "per_agent_mb": per_agent_mb(),
+        "chromium_mb": CHROMIUM_MB,
+        "agent_process_mb": AGENT_PROCESS_MB,
+        "shared_mb": shared_mb(),
+        "whisper_mb": WHISPER_TINY_MB if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_MB,
+        "piper_mb": PIPER_MB,
+        "llm_mb": LLM_1_5B_Q4_MB,
+        "pipewire_mb": PIPEWIRE_MB,
+        "ram_agents": ram_agent_limit(),
+        "cpu_agents": cpu_agent_limit(),
+        "max_agents": max_agents(),
+        "bottleneck": bottleneck(),
+        "stt_model": stt_model(),
+        "stt_rtf_x86": WHISPER_TINY_RTF if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_RTF,
+        "stt_rtf_arm_estimate": round(stt_rtf(), 2),
+        "calls_per_account": GOOGLE_VOICE_CONCURRENT_CALLS,
+        "cores_per_live_call": CORES_PER_LIVE_CALL,
+    }

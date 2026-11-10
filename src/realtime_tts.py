@@ -61,8 +61,10 @@ class RealtimeTTS:
         use_cache: bool = True,
         allow_sapi_fallback: bool = False,
         audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
+        pulse_sink: str | None = None,
     ):
         self.device_index = device_index
+        self.pulse_sink = pulse_sink or ""
         self.voice = voice
         self._piper_phrase_cache: _PiperPhraseCache | None = None
         requested_engine = (engine or os.getenv("TTS_ENGINE", "edge")).strip().lower()
@@ -227,6 +229,9 @@ class RealtimeTTS:
         for i, part in enumerate(parts):
             self.speak(part, interrupt=(interrupt and i == 0))
 
+    def _emit(self, data, rate: int) -> None:
+        _play_numpy_to_device(data, rate, self.device_index, pulse_sink=self.pulse_sink or None)
+
     def set_audio_observer(self, callback: Optional[Callable[[np.ndarray, int], None]]) -> None:
         """Receive synthesized Tony audio when playback starts."""
         self._audio_observer = callback
@@ -251,7 +256,7 @@ class RealtimeTTS:
                 clause_pause=getattr(self, "_kokoro_clause_pause", 0.16),
             )
             self._notify_audio_observer(data, rate)
-            _play_numpy_to_device(data, rate, self.device_index)
+            self._emit(data, rate)
             return
         if self._engine == "piper":
             prepared = _prepare_piper_text(text)
@@ -280,7 +285,7 @@ class RealtimeTTS:
                 duration,
             )
             self._notify_audio_observer(data, rate)
-            _play_numpy_to_device(data, rate, self.device_index)
+            self._emit(data, rate)
             return
 
         # Try cache first — zero network latency for pre-warmed phrases
@@ -291,7 +296,7 @@ class RealtimeTTS:
                 try:
                     data, rate = _decode_mp3(cached_bytes)
                     self._notify_audio_observer(data, rate)
-                    _play_numpy_to_device(data, rate, self.device_index)
+                    self._emit(data, rate)
                     return
                 except Exception as exc:
                     logger.debug("RealtimeTTS: cache playback failed (%s); falling through to synthesis", exc)
@@ -314,7 +319,7 @@ class RealtimeTTS:
                         duration,
                     )
                     self._notify_audio_observer(data, rate)
-                    _play_numpy_to_device(data, rate, self.device_index)
+                    self._emit(data, rate)
                     return
                 except Exception as exc:
                     last_exc = exc
@@ -777,10 +782,21 @@ def _pyttsx3_to_device(
 # Shared playback util
 # ------------------------------------------------------------------ #
 
-def _play_numpy_to_device(data: np.ndarray, samplerate: int, device_index: int) -> None:
+def _play_numpy_to_device(
+    data: np.ndarray,
+    samplerate: int,
+    device_index: int,
+    pulse_sink: str | None = None,
+) -> None:
     from src.voice_playback import _stream_audio_to_device
 
-    _stream_audio_to_device(data.astype(np.float32), samplerate, device_index, block=True)
+    _stream_audio_to_device(
+        data.astype(np.float32),
+        samplerate,
+        device_index,
+        block=True,
+        pulse_sink=pulse_sink,
+    )
 
 
 def save_edge_tts_wav(text: str, output_path: str | Path, voice: str = VOICE_GUY) -> Path:

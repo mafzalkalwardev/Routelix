@@ -126,6 +126,20 @@ Before the first live run the process creates two null sinks:
 
 Run Preflight, then Audio → test TTS and test capture, before a campaign. A VPS has no room speakers. Listen-in cannot play into a physical speaker unless the machine has one; use the Recordings tab. If Chromium does not attach to the sinks, the call will be one-way or silent even though the console is up. That is a browser/Pulse limitation, not something the installer can guarantee.
 
-## 7. Operators
+## 7. Concurrent agents
+
+One Google Voice account is one live call. Add more accounts in Settings (Connect uses `ensure_logged_in`) to add agents. `MAX_AGENTS=auto` admits only as many as the CPU budget allows after `ROUTELIX_RESERVED_CORES` (default 1) and `ROUTELIX_RESERVED_RAM_GB` (default 8, for MailForge/MongoDB and Ollama). On a 4-core / 24 GB host that cap is 4. RAM would allow more. The dashboard shows the cap, the active slots, and the queue.
+
+Each admitted account gets `routelix_to_gv_<n>` and `routelix_from_gv_<n>`. Speech-to-text uses `STT_LOCAL_MODEL=tiny` and `STT_THREADS=1` (measured 26x realtime for an 8 second clip on one x86 thread; about 16x on ARM at the default 0.6 scale). The local LLM is one shared queue (`LLM_PARALLEL=1`, `LLM_THREADS=2`), or `LLAMA_SERVER_URL` if you run `llama-server --parallel 1`.
+
+Optional per-slot process, restarted by systemd:
+
+```bash
+sudo systemctl enable --now routelix-agent@1
+```
+
+The console's parallel dialer also restarts a crashed slot browser up to 3 times. Per account, calls wait `ACCOUNT_MIN_GAP_SECONDS` (45) and stop after `ACCOUNT_MAX_CALLS_PER_HOUR` (30).
+
+## 8. Operators
 
 The admin created from `ROUTELIX_ADMIN_PASSWORD` opens **Users** and adds operator accounts. Passwords are PBKDF2-SHA256 hashes in `data/users.json`. Login attempts are limited to 8 failures per 15 minutes per IP in this process.

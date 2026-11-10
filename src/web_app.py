@@ -623,10 +623,16 @@ async def marketing_home(request: Request):
 async def dashboard(request: Request):
     logs = _read_call_logs(limit=10)
     state = run_manager.get_state()
+    from src.agent_fleet import FLEET
+    from src.capacity import capacity_report, component_budget
+
     return templates.TemplateResponse(request, "index.html", {
         "recent_logs": logs,
         "run_state": state,
         "log_stats": _call_log_stats(),
+        "capacity_report": capacity_report(),
+        "capacity": component_budget(),
+        "fleet": FLEET.snapshot(),
     })
 
 
@@ -1178,6 +1184,21 @@ async def api_save_settings(request: Request):
     return {"ok": True, "saved": list(allowed.keys())}
 
 
+@app.get("/api/fleet")
+async def api_fleet():
+    from src.agent_fleet import FLEET
+    from src.capacity import capacity_report, component_budget
+
+    snap = FLEET.snapshot()
+    budget = component_budget()
+    return {
+        "ok": True,
+        "report": capacity_report(),
+        "budget": budget,
+        "fleet": snap,
+    }
+
+
 @app.get("/api/gv-accounts")
 async def api_gv_accounts():
     from src.gv_accounts import public_accounts
@@ -1194,6 +1215,15 @@ async def api_gv_accounts():
 async def api_save_gv_account(request: Request):
     from src.gv_accounts import save_account
     body = await request.json()
+    if not str(body.get("loopback_device") or "").strip():
+        from src.agent_fleet import slot_audio
+        from src.gv_accounts import load_accounts
+
+        index = len(load_accounts()) + (0 if body.get("id") else 1)
+        index = max(1, index)
+        tts, _speaker, monitor = slot_audio(index)
+        body["loopback_device"] = tts
+        body["capture_device"] = body.get("capture_device") or monitor
     try:
         account = save_account(body)
     except (ValueError, OSError) as exc:

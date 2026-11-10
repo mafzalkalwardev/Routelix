@@ -131,6 +131,7 @@ fi
 
 sed "s|@APP_DIR@|${APP_DIR}|g" "$APP_DIR/deploy/linux/routelix.service" > /etc/systemd/system/routelix.service
 sed "s|@APP_DIR@|${APP_DIR}|g" "$APP_DIR/deploy/linux/routelix-audio.service" > /etc/systemd/system/routelix-audio.service
+sed "s|@APP_DIR@|${APP_DIR}|g" "$APP_DIR/deploy/linux/routelix-agent@.service" > /etc/systemd/system/routelix-agent@.service
 chmod 755 "$APP_DIR/deploy/linux/audio-daemon.sh" "$APP_DIR/deploy/linux/gv-login.sh" "$APP_DIR/deploy/linux/install.sh"
 
 install -d /etc/wireplumber/main.lua.d /etc/wireplumber/wireplumber.conf.d \

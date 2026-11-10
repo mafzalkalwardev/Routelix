@@ -7,11 +7,18 @@ reliably when launched from systemd.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import shutil
 import sys
 from pathlib import Path
 from typing import Optional
+
+# Set by GoogleVoiceBrowser.launch so each Chromium gets its own sinks.
+pulse_route: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "routelix_pulse_route",
+    default=None,
+)
 
 
 def _is_snap(path: str) -> bool:
@@ -128,6 +135,13 @@ def chromedriver_service():
 
     env = os.environ.copy()
     env.update(chromium_pulse_env())
+    route = pulse_route.get()
+    if route:
+        sink, source = route
+        if sink:
+            env["PULSE_SINK"] = sink
+        if source:
+            env["PULSE_SOURCE"] = source
     display = os.getenv("ROUTELIX_DISPLAY", "").strip()
     if display:
         env["DISPLAY"] = display

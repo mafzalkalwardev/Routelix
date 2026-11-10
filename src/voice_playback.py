@@ -317,6 +317,7 @@ def _stream_audio_to_device(
     device_index: int,
     block: bool = True,
     stop_event: Optional[threading.Event] = None,
+    pulse_sink: str | None = None,
 ) -> None:
     """Write numpy-compatible audio to an explicit sounddevice OutputStream."""
     if device_index == PULSE_OUTPUT_INDEX:
@@ -325,7 +326,7 @@ def _stream_audio_to_device(
         play_float32_to_pulse_sink(
             data,
             int(samplerate),
-            _pulse_sink_name or "routelix_to_gv",
+            pulse_sink or _pulse_sink_name or "routelix_to_gv",
             stop_event=stop_event,
         )
         return

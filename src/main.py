@@ -480,6 +480,7 @@ def _run_call(
                 validate_tts_output_device(loopback_device_index)
                 shared_tts = RealtimeTTS(
                     device_index=loopback_device_index,
+                    pulse_sink=loopback_device,
                     engine=tts_engine,
                     voice=tts_voice,
                     piper_model_path=piper_model_path,
@@ -862,6 +863,7 @@ def _handle_call_screening(
         if own_tts:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                pulse_sink=loopback_device,
                 engine=tts_engine,
                 voice=tts_voice,
                 piper_model_path=piper_model_path,
@@ -1039,6 +1041,7 @@ def _run_realtime_loop(
         else:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                pulse_sink=loopback_device,
                 engine=tts_engine,
                 voice=tts_voice,
                 piper_model_path=piper_model_path,
@@ -1582,6 +1585,8 @@ def _run_parallel_live_batch(
             profile_name=slot.profile_name,
             headless=args.headless,
             avoid_page_reload=cfg.avoid_gv_page_reload,
+            pulse_sink=getattr(slot, "pulse_sink", "") or "",
+            pulse_source=getattr(slot, "pulse_source", "") or "",
         )
         with holder_lock:
             browser_holder.append(browser)
@@ -1630,6 +1635,13 @@ def _run_parallel_live_batch(
             index,
             contact.get("phone", ""),
         )
+        from src.account_pacing import PACER
+
+        allowed, reason = PACER.allow(slot.account_id or slot.profile_name)
+        if not allowed:
+            logger.info("[Slot %d] pacing hold: %s", slot.slot_id + 1, reason)
+            time.sleep(PACER.min_gap_s())
+        PACER.mark(slot.account_id or slot.profile_name)
         kwargs = dict(shared_call_kwargs)
         kwargs.update(
             loopback_device=slot.loopback_device,
@@ -1691,6 +1703,7 @@ def _run_parallel_live_batch(
         slots,
         cooldown_min=float(cfg.call_cooldown_seconds),
         cooldown_max=float(cfg.call_cooldown_seconds),
+        restart_limit=3,
     )
     scheduler.run(
         indexed_contacts,
@@ -1814,22 +1827,34 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
-    # One Google Voice login is one phone line. Saved extra accounts are not
-    # extra simultaneous calls. ensure_logged_in reuses that single session.
-    from src.capacity import google_voice_concurrent_calls
+    # Each enabled account can place one live call. The fleet admits only as
+    # many as max_agents() allows and gives each its own Pulse sinks.
+    from src.capacity import capacity_report, google_voice_concurrent_calls
     from src.gv_accounts import load_accounts
     enabled_accounts = [row for row in load_accounts(include_password=True) if row.get("enabled")]
     account_by_profile = {str(row["profile_name"]).casefold(): row for row in enabled_accounts}
-    account_parallel_profiles = []
+    from src.agent_fleet import FLEET, prepare_slot_audio
+
+    fleet_plan = FLEET.plan(enabled_accounts)
+    account_parallel_profiles = fleet_plan.as_parallel_profiles()
     if enabled_accounts:
         first_account = enabled_accounts[0]
         profile_name = first_account["profile_name"]
-        loopback_device = first_account["loopback_device"] or loopback_device
-        capture_device = first_account["capture_device"] or capture_device
+        if fleet_plan.slots:
+            loopback_device = fleet_plan.slots[0].loopback_device
+            capture_device = fleet_plan.slots[0].capture_device
+        else:
+            loopback_device = first_account["loopback_device"] or loopback_device
+            capture_device = first_account["capture_device"] or capture_device
+        for slot in fleet_plan.slots:
+            prepare_slot_audio(slot)
         logger.info(
-            "Account manager enabled %d Google Voice account(s): %s",
+            "Fleet admitted %d of %d Google Voice account(s) (max %d, queued %d): %s",
+            len(fleet_plan.slots),
             len(enabled_accounts),
-            ", ".join(row["email"] for row in enabled_accounts),
+            fleet_plan.max_agents,
+            len(fleet_plan.queued_accounts),
+            ", ".join(slot.email or slot.profile_name for slot in fleet_plan.slots),
         )
 
     # Auto-route Windows mic/speakers first, then resolve PortAudio cable names.
@@ -1845,16 +1870,15 @@ def main() -> None:
 
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    requested_slots = google_voice_concurrent_calls()
-    if len(enabled_accounts) > 1 or int(cfg.n_slots) > 1:
-        logger.info(
-            "Google Voice allows %d live call on this number. "
-            "n_slots=%d and saved accounts=%d do not add lines. "
-            "See src/capacity.py for how many agents fit in RAM if more numbers existed.",
-            requested_slots,
-            int(cfg.n_slots),
-            len(enabled_accounts),
-        )
+    requested_slots = max(1, len(fleet_plan.slots) or 1)
+    if not fleet_plan.slots:
+        requested_slots = 1
+    logger.info(
+        "Live agents=%d. Each Google Voice account places %d call at a time. %s",
+        requested_slots,
+        google_voice_concurrent_calls(),
+        capacity_report(),
+    )
     parallel_requested = requested_slots > 1
     if not loopback_available and not parallel_requested:
         logger.warning(
@@ -1979,8 +2003,8 @@ def main() -> None:
     try:
         parallel_slots = build_parallel_slots(
             requested=requested_slots,
-            max_concurrent_dials=cfg.max_concurrent_dials,
-            force_requested_slots=cfg.force_requested_slots,
+            max_concurrent_dials=max(cfg.max_concurrent_dials, requested_slots),
+            force_requested_slots=bool(fleet_plan.slots) or cfg.force_requested_slots,
             primary_profile=profile_name,
             primary_loopback=loopback_device,
             primary_capture=capture_device,
@@ -2015,10 +2039,13 @@ def main() -> None:
         logger.info("All parallel calls complete. Logs: logs/call_logs.csv | Audio: %s/", output_dir)
         return
 
+    first_slot = fleet_plan.slots[0] if fleet_plan.slots else None
     browser = GoogleVoiceBrowser(
         profile_name=profile_name,
         headless=args.headless,
         avoid_page_reload=cfg.avoid_gv_page_reload,
+        pulse_sink=first_slot.pulse_sink if first_slot else "",
+        pulse_source=first_slot.pulse_source if first_slot else "",
     )
     browser_holder.append(browser)
     logger.info("Launching Chrome profile: %s", profile_name)
