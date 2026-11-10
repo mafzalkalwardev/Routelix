@@ -21,7 +21,10 @@ many more.
 """
 from __future__ import annotations
 
+import json
 import os
+
+from src.paths import runtime_base
 
 GOOGLE_VOICE_CONCURRENT_CALLS = 1
 
@@ -123,8 +126,32 @@ def cpu_agent_limit() -> int:
 
 
 def max_agents() -> int:
-    """Calls this install will place at once. One account, one live call."""
-    return GOOGLE_VOICE_CONCURRENT_CALLS
+    """Live calls on the one Google Voice account. One call per Chrome profile."""
+    return configured_line_count()
+
+
+def configured_line_count() -> int:
+    """How many Chrome profiles the admin armed. Hard ceiling is 7."""
+    raw = os.getenv("ROUTELIX_LINES", "").strip()
+    if not raw:
+        path = runtime_base() / "data" / "lines.json"
+        if path.is_file():
+            try:
+                raw = str(json.loads(path.read_text(encoding="utf-8")).get("lines") or "")
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                raw = ""
+    if not raw:
+        raw = "1"
+    try:
+        count = int(raw)
+    except ValueError:
+        count = 1
+    return max(1, min(7, count))
+
+
+def sustainable_lines() -> int:
+    """How many live calls fit after the reserved CPU and RAM. Ceiling is 7."""
+    return max(1, min(7, cpu_agent_limit(), ram_agent_limit()))
 
 
 def piper_rtf() -> float:
@@ -145,7 +172,10 @@ def capacity_report() -> str:
         f"Host {host_cores():.0f} cores / {host_ram_gb():.0f} GB, "
         f"reserving {reserved_cores():.0f} core and {reserved_ram_gb():.0f} GB "
         f"(MailForge/MongoDB and Ollama). "
-        f"The Main line places {GOOGLE_VOICE_CONCURRENT_CALLS} live call. "
+        f"One Google Voice account places 1 live call per Chrome profile. "
+        f"Configured lines: {configured_line_count()}. "
+        f"Measured sustainable lines on this host: {sustainable_lines()}. "
+        f"A second Google Voice account is not admitted. "
         f"One Chromium session is about {per_agent_mb()} MB "
         f"(Chromium {CHROMIUM_MB} MB, worker {AGENT_PROCESS_MB} MB). "
         f"Shared once: whisper {WHISPER_TINY_MB if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_MB} MB, "
@@ -179,6 +209,13 @@ def component_budget() -> dict:
         "ram_agents": ram_agent_limit(),
         "cpu_agents": cpu_agent_limit(),
         "max_agents": max_agents(),
+        "configured_lines": configured_line_count(),
+        "sustainable_lines": sustainable_lines(),
+        "line_warning": (
+            f"{configured_line_count()} lines exceeds measured capacity of {sustainable_lines()}"
+            if configured_line_count() > sustainable_lines()
+            else ""
+        ),
         "bottleneck": bottleneck(),
         "stt_model": stt_model(),
         "stt_rtf_x86": WHISPER_TINY_RTF if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_RTF,

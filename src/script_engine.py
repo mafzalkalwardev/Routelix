@@ -187,6 +187,73 @@ def default_objections(product: str) -> dict[str, str]:
     }
 
 
+def _truck_dispatch(script_id: str, name: str, language: str) -> CallScript:
+    """Ashley’s existing truck-dispatch sales talk track. Not a web-agency template."""
+    if language == "es":
+        return CallScript(
+            script_id=script_id,
+            name=name,
+            language="es",
+            product="despacho dedicado",
+            voice_id="es_MX-claude-high",
+            compliance=(
+                "Hola, soy {agent_name} de {company}. Llamo por {product}. "
+                "Si quiere que deje de llamar, dígalo y lo marco."
+            ),
+            opener="¿Hablo con el dueño o con quien despacha los camiones?",
+            qualify="¿Qué está corriendo ahora: dry van, reefer, flatbed, hotshot o box truck?",
+            value=(
+                "Buscamos cargas, negociamos la tarifa y hacemos el papeleo del broker. "
+                "Usted aprueba cada carga antes de reservarla."
+            ),
+            close="Empecemos hoy. ¿Cuál es el mejor correo para el paquete del carrier?",
+            voicemail=(
+                "Hola, soy {agent_name} de {company}. Ayudamos a owner-operators con despacho dedicado. "
+                "Llámenos de vuelta si quiere hablar. Gracias."
+            ),
+            opt_out="Marco este número para no volver a llamar.",
+            objections={
+                "not_interested": "Entiendo. Si el despacho no le sirve, lo dejo. ¿Es el momento o la oferta?",
+                "too_busy": "Seré breve. ¿Tiene un minuto para decirme qué equipo corre?",
+                "send_email": "Se lo envío. El correo es para el paquete, no para posponer la decisión. ¿Qué dirección uso?",
+                "price": "El pago es un porcentaje según el equipo, o mil dólares al mes en contrato. No prometo ingresos.",
+                "have_provider": "Quédese con su despacho. Esto sirve como respaldo si ellos no cubren sus carriles. ¿Le mando la comparación?",
+                "who_is_this": "Soy {agent_name} de {company}. Llamo por despacho dedicado.",
+                "call_back_later": "¿Qué día le queda menos mal, y qué correo dejo anotado?",
+            },
+        )
+    return CallScript(
+        script_id=script_id,
+        name=name,
+        language="en",
+        product="dedicated truck dispatch",
+        compliance=(
+            "Hi, this is {agent_name} with {company}. I am calling about {product}. "
+            "If you want me to stop, say so and I will mark it."
+        ),
+        opener="Am I speaking with the owner or the person who dispatches the truck?",
+        qualify="What are you mainly running right now — dry van, reefer, flatbed, hotshot, or box truck?",
+        value=(
+            "We find and negotiate loads, handle the broker paperwork, and you approve every load before it is booked."
+        ),
+        close="Let's get you started today. What is the best email for the carrier packet?",
+        voicemail=(
+            "Hi, this is {agent_name} with {company}. We help owner-operators with dedicated dispatch. "
+            "Please call us back if you want to talk. Thank you."
+        ),
+        opt_out="I will mark this number do-not-call and I will not phone again.",
+        objections={
+            "not_interested": "Understood. If dispatch is not useful, I will let you go. Is it timing, or the offer?",
+            "too_busy": "I will be quick. Do you have a minute to tell me what equipment you are running?",
+            "send_email": "I can email the packet. That is how we start, not how we postpone it. What address should I use?",
+            "price": "Payment is a percent by equipment, or one thousand dollars a month on contract. I will not promise income.",
+            "have_provider": "Keep them. This is a backup if they are not covering your lanes. Should I send the comparison?",
+            "who_is_this": "This is {agent_name} at {company}. I am calling about dedicated truck dispatch.",
+            "call_back_later": "What day is least painful, and what email should I put on the note?",
+        },
+    )
+
+
 def builtin_templates() -> list[CallScript]:
     product = "a short working session"
     return [
@@ -208,7 +275,9 @@ def builtin_templates() -> list[CallScript]:
                 "If you want a short conversation, call us back. Thank you."
             ),
             objections=default_objections(product),
-        )
+        ),
+        _truck_dispatch("truck-dispatch-sales", "Truck dispatch sales", "en"),
+        _truck_dispatch("truck-dispatch-sales-es", "Truck dispatch sales, Spanish", "es"),
     ]
 
 

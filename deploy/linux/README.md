@@ -134,11 +134,58 @@ Run Preflight, then Audio → test TTS and test capture, before a campaign. A VP
 
 ## 7. Concurrent agents
 
-Routelix uses one Google Voice account, the Main line, and places one live call on it. The dashboard also reports host headroom after `ROUTELIX_RESERVED_CORES` (default 1) and `ROUTELIX_RESERVED_RAM_GB` (default 8). On a 4-core / 24 GB host the CPU headroom is 4 calls and RAM headroom is higher. That headroom is not used to admit another account.
+Routelix uses one Google Voice account, the Main line. That account can be signed in on several Chrome profiles (`ROUTELIX_LINES`, ceiling 7), and each profile places one live call. A second Google Voice account is not admitted. The dashboard reports host headroom after `ROUTELIX_RESERVED_CORES` (default 1) and `ROUTELIX_RESERVED_RAM_GB` (default 8). On a 4-core / 24 GB host the measured sustainable count is 4. Arming more than that, up to 7, shows a warning.
 
 The Main line uses `routelix_to_gv` for speech playback and `routelix_from_gv.monitor` for capture. Speech-to-text uses `STT_LOCAL_MODEL=tiny` and `STT_THREADS=1` (measured 26x realtime for an 8 second clip on one x86 thread; about 16x on ARM at the default 0.6 scale). The local LLM is one shared queue (`LLM_PARALLEL=1`, `LLM_THREADS=2`), or `LLAMA_SERVER_URL` if you run `llama-server --parallel 1`.
 
 Calls on the Main line wait `ACCOUNT_MIN_GAP_SECONDS` (45) and stop after `ACCOUNT_MAX_CALLS_PER_HOUR` (30).
+
+## 7b. Several Chrome lines, one Google Voice account
+
+`ROUTELIX_LINES` is how many Chrome profiles place a call at the same time on the Main line. The ceiling is 7. Each line is one live call. It does not add a second Google Voice account.
+
+| Line | Profile | Audio | Display | VNC / noVNC |
+| --- | --- | --- | --- | --- |
+| 1 | `chrome_profiles/tony` if that session is already there | `routelix_to_gv_1` / `routelix_from_gv_1.monitor` | `:98` | 5911 / 6091 |
+| 2 | `tony_2`, cloned from `tony` when the folder is missing | `routelix_to_gv_2` / `routelix_from_gv_2.monitor` | `:98`, separate window | 5912 / 6092 |
+| N | `tony_N` | `routelix_to_gv_N` / `routelix_from_gv_N.monitor` | `:98`, or `:100+` if `ROUTELIX_SEPARATE_DISPLAYS=1` | 5910+N / 6090+N |
+
+These ports are not 5901, 5902, 6080, or 6081. Display `:99` is laneora-chrome and is not used. A profile without a session needs one sign-in through the existing Connect flow. Do not delete `chrome_profiles/tony` during a deploy.
+
+The audio service creates the numbered sinks when `ROUTELIX_LINES` is set. On a 4-core host with 1 core reserved, the measured sustainable count is 4. The lines page lets an admin arm up to 7 and shows a warning past that count. This measurement is the x86 per-call cost (about 0.7 core and 500 MB for Chromium plus the worker) scaled for the ARM host. It is not a seven-way live call captured on the A1 box.
+
+## 7c. Moving this build onto /opt/routelix
+
+Keep the existing checkout, Google Voice session, `data/`, and scripts. From the new tree:
+
+```bash
+sudo systemctl stop routelix
+cd /opt/routelix
+sudo -u routelix git pull
+sudo bash deploy/linux/install.sh
+```
+
+Add these to `/opt/routelix/.env` if they are missing. Leave `ROUTELIX_DISPLAY=:98`.
+
+```bash
+ROUTELIX_LINES=1
+ROUTELIX_SEPARATE_DISPLAYS=0
+```
+
+Raise `ROUTELIX_LINES` only after the lines page shows the warning you are willing to accept. Then:
+
+```bash
+sudo systemctl restart routelix-audio routelix
+```
+
+`routelix-audio` creates `routelix_to_gv_1` through `routelix_to_gv_N` without removing `routelix_to_gv`. The first start creates Ashley if she is not already a user. Her password is written to `/opt/routelix/data/ashley.password` and is not printed. Lock that file to root:
+
+```bash
+sudo chown root:root /opt/routelix/data/ashley.password
+sudo chmod 400 /opt/routelix/data/ashley.password
+```
+
+`data/users.json`, `data/lead_crm.json`, `data/call_scripts.json`, and `chrome_profiles/tony` stay in place. Confirm tony is still the line 1 profile before the first multi-line run. Open Admin CRM and Lines after login. Set Ashley active if a previous user row was pending, assign `truck-dispatch-sales` (Spanish calls can use `truck-dispatch-sales-es`), and import her CSV with the list name `truck-dispatch`.
 
 ## 8. Operators
 

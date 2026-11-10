@@ -977,6 +977,174 @@ async def admin_users_create(
     )
 
 
+def _require_admin(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user
+
+
+@app.get("/admin/crm", response_class=HTMLResponse)
+async def admin_crm_page(request: Request):
+    _require_admin(request)
+    from src.auth import ensure_ashley, list_public_users
+
+    ensure_ashley()
+    from src.lead_crm import list_leads, user_stats
+    from src.script_engine import load_scripts
+
+    users = list_public_users()
+    stats_by = {user["username"]: user_stats(user["username"]) for user in users}
+    return templates.TemplateResponse(request, "admin_crm.html", {
+        "users": users,
+        "stats_by": stats_by,
+        "leads": list_leads(include_all=True),
+        "scripts": [item.to_dict() for item in load_scripts()],
+        "error": "",
+    })
+
+
+@app.post("/admin/crm/users")
+async def admin_crm_create_user(request: Request):
+    _require_admin(request)
+    from src.auth import create_user
+
+    body = await request.json()
+    try:
+        created = create_user(
+            str(body.get("username") or ""),
+            str(body.get("password") or ""),
+            role=str(body.get("role") or "agent"),
+            status=str(body.get("status") or "pending"),
+            script_id=str(body.get("script_id") or ""),
+            lead_list=str(body.get("lead_list") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "user": created}
+
+
+@app.post("/admin/crm/users/{username}")
+async def admin_crm_update_user(username: str, request: Request):
+    _require_admin(request)
+    from src.auth import update_user
+
+    body = await request.json()
+    try:
+        updated = update_user(
+            username,
+            **{key: body[key] for key in ("status", "script_id", "lead_list", "role") if key in body},
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "user": updated}
+
+
+@app.post("/admin/crm/leads/import")
+async def admin_crm_import_leads(request: Request):
+    _require_admin(request)
+    from src.lead_crm import import_csv
+
+    body = await request.json()
+    try:
+        added = import_csv(
+            str(body.get("csv") or ""),
+            owner=str(body.get("owner") or ""),
+            list_name=str(body.get("list_name") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "added": added}
+
+
+@app.post("/admin/crm/leads/assign")
+async def admin_crm_assign_list(request: Request):
+    _require_admin(request)
+    from src.auth import update_user
+    from src.lead_crm import assign_list
+
+    body = await request.json()
+    try:
+        changed = assign_list(str(body.get("list_name") or ""), str(body.get("owner") or ""))
+        update_user(str(body.get("owner") or ""), lead_list=str(body.get("list_name") or ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "updated": changed}
+
+
+@app.get("/admin/lines", response_class=HTMLResponse)
+async def admin_lines_page(request: Request):
+    _require_admin(request)
+    from src.auth import list_public_users
+    from src.capacity import configured_line_count, sustainable_lines
+    from src.gv_lines import capacity_warning, line_plan
+
+    count = configured_line_count()
+    return templates.TemplateResponse(request, "lines.html", {
+        "lines": line_plan(count),
+        "count": count,
+        "sustainable": sustainable_lines(),
+        "warning": capacity_warning(count),
+        "users": list_public_users(),
+    })
+
+
+@app.post("/admin/lines")
+async def admin_lines_set(request: Request):
+    _require_admin(request)
+    from src.gv_lines import capacity_warning, set_line_count
+
+    body = await request.json()
+    try:
+        count = int(body.get("lines"))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Enter a line count"})
+    if count < 1 or count > 7:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Lines must be from 1 to 7"})
+    count = set_line_count(count)
+    return {"ok": True, "lines": count, "warning": capacity_warning(count)}
+
+
+@app.get("/my", response_class=HTMLResponse)
+async def my_work_page(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from src.lead_crm import list_leads, user_stats
+
+    owner = "" if user.get("role") == "admin" else user["username"]
+    leads = list_leads(owner=user["username"], include_all=user.get("role") == "admin")
+    return templates.TemplateResponse(request, "my_work.html", {
+        "leads": leads,
+        "stats": user_stats("" if user.get("role") == "admin" else user["username"]),
+        "can_dial": str(user.get("status") or "active") == "active",
+        "owner_filter": owner,
+    })
+
+
+@app.post("/my/leads/{lead_id}")
+async def my_update_lead(lead_id: str, request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from src.lead_crm import update_lead
+
+    body = await request.json()
+    fields = {key: body[key] for key in ("status", "notes", "follow_up") if key in body}
+    try:
+        updated = update_lead(
+            lead_id,
+            actor=user["username"],
+            is_admin=user.get("role") == "admin",
+            **fields,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "lead": updated}
+
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -1567,6 +1735,11 @@ async def api_audio_test_capture(request: Request):
 
 @app.post("/api/run/start")
 async def api_run_start(request: Request):
+    user = getattr(request.state, "user", None)
+    from src.auth import can_dial
+
+    if not can_dial(user):
+        raise HTTPException(status_code=403, detail="Only an active user can start dialing")
     body = await request.json()
     cfg = _load_config()
 
@@ -1604,6 +1777,11 @@ async def api_run_start(request: Request):
 
 @app.post("/api/run/single-call")
 async def api_run_single_call(request: Request):
+    user = getattr(request.state, "user", None)
+    from src.auth import can_dial
+
+    if not can_dial(user):
+        raise HTTPException(status_code=403, detail="Only an active user can start dialing")
     body = await request.json()
     cfg = _load_config()
 
@@ -2048,9 +2226,10 @@ def _server_port(default: int = 8000) -> int:
 async def _web_startup() -> None:
     logger.info("INDUS web console build=%s (contacts API: /api/contacts/list)", WEB_APP_BUILD)
     try:
-        from src.auth import ensure_bootstrap_admin
+        from src.auth import ensure_ashley, ensure_bootstrap_admin
 
         ensure_bootstrap_admin()
+        ensure_ashley()
     except Exception:
         logger.exception("Admin bootstrap failed")
     if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:

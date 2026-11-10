@@ -62,7 +62,11 @@ def test_only_generic_b2b_appointment_templates():
 def test_script_engine_stays_on_script_and_blocks_invented_prices():
     from src.script_engine import builtin_templates, evaluate_script, guard_reply
 
-    assert {item.script_id for item in builtin_templates()} == {"b2b-appointment"}
+    ids = {item.script_id for item in builtin_templates()}
+    assert "b2b-appointment" in ids
+    assert "truck-dispatch-sales" in ids
+    assert "truck-dispatch-sales-es" in ids
+    assert not any(item.startswith("indus-") for item in ids)
     script = next(item for item in builtin_templates() if item.script_id == "b2b-appointment")
     assert "Indus" not in script.compliance
     assert "MailForge" not in script.product
@@ -97,7 +101,9 @@ def test_custom_script_saves_and_indus_templates_stay_out(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(scripts, "scripts_path", lambda: path)
     loaded = {item.script_id for item in scripts.load_scripts()}
-    assert loaded == {"b2b-appointment"}
+    assert "b2b-appointment" in loaded
+    assert "truck-dispatch-sales" in loaded
+    assert "indus-seo" not in loaded
     assert scripts.active_script_id() == ""
     custom = scripts.CallScript(
         script_id="clinic-outreach",
@@ -132,8 +138,8 @@ def test_fleet_admits_only_the_main_line(monkeypatch):
     assert len(plan.slots) == 1
     assert plan.max_agents == 1
     assert plan.slots[0].email == "a1@example.com"
-    assert plan.slots[0].loopback_device == "routelix_to_gv"
-    assert plan.slots[0].capture_device == "routelix_from_gv.monitor"
+    assert plan.slots[0].loopback_device == "routelix_to_gv_1"
+    assert plan.slots[0].capture_device == "routelix_from_gv_1.monitor"
     assert plan.queued_accounts == []
     assert plan.slots[0].active_calls == 0
 

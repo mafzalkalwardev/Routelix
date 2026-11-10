@@ -111,10 +111,33 @@ def list_public_users() -> list[dict]:
         return [_public(row) for row in _read_users()]
 
 
+def _role(value: str) -> str:
+    role = (value or "agent").strip().lower()
+    if role == "admin":
+        return "admin"
+    return "agent"
+
+
+def _status(value: str, *, role: str) -> str:
+    status = (value or "").strip().lower()
+    if status in {"pending", "active", "suspended"}:
+        return status
+    return "active" if role == "admin" else "pending"
+
+
 def _public(row: dict) -> dict:
+    role = _role(str(row.get("role") or "agent"))
+    if str(row.get("role") or "") == "operator":
+        role = "agent"
+    status = str(row.get("status") or "").strip().lower()
+    if status not in {"pending", "active", "suspended"}:
+        status = "active"
     return {
         "username": str(row.get("username") or ""),
-        "role": str(row.get("role") or "operator"),
+        "role": role,
+        "status": status,
+        "script_id": str(row.get("script_id") or ""),
+        "lead_list": str(row.get("lead_list") or ""),
         "created_at": str(row.get("created_at") or ""),
     }
 
@@ -149,6 +172,9 @@ def ensure_bootstrap_admin() -> Optional[dict]:
             "username": username,
             "password_hash": hash_password(password),
             "role": "admin",
+            "status": "active",
+            "script_id": "",
+            "lead_list": "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         users.append(row)
@@ -174,9 +200,22 @@ def authenticate(username: str, password: str) -> Optional[dict]:
     return _public(match)
 
 
-def create_user(username: str, password: str, role: str = "operator") -> dict:
+def can_dial(user: Optional[dict]) -> bool:
+    if not user:
+        return False
+    return str(user.get("status") or "active") == "active"
+
+
+def create_user(
+    username: str,
+    password: str,
+    role: str = "agent",
+    status: str = "",
+    script_id: str = "",
+    lead_list: str = "",
+) -> dict:
     username = (username or "").strip()
-    role = "admin" if role == "admin" else "operator"
+    role = _role(role)
     if not username or len(username) < 3 or len(username) > 32:
         raise ValueError("Username must be 3–32 characters")
     if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in username):
@@ -191,11 +230,84 @@ def create_user(username: str, password: str, role: str = "operator") -> dict:
             "username": username,
             "password_hash": hash_password(password),
             "role": role,
+            "status": _status(status, role=role),
+            "script_id": str(script_id or ""),
+            "lead_list": str(lead_list or ""),
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         users.append(row)
         _write_users(users)
         return _public(row)
+
+
+def update_user(username: str, **fields) -> dict:
+    """Admin updates status, script, or lead list. Passwords stay hashed."""
+    username = (username or "").strip()
+    with _LOCK:
+        users = _read_users()
+        match = next((row for row in users if str(row.get("username")) == username), None)
+        if match is None:
+            raise ValueError("User not found")
+        if "status" in fields:
+            status = str(fields["status"] or "").strip().lower()
+            if status not in {"pending", "active", "suspended"}:
+                raise ValueError("Status must be pending, active, or suspended")
+            match["status"] = status
+        if "script_id" in fields:
+            match["script_id"] = str(fields["script_id"] or "")
+        if "lead_list" in fields:
+            match["lead_list"] = str(fields["lead_list"] or "")
+        if "role" in fields:
+            match["role"] = _role(str(fields["role"]))
+        _write_users(users)
+        return _public(match)
+
+
+def ashley_password_path() -> Path:
+    override = os.getenv("ROUTELIX_ASHLEY_PASSWORD_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return runtime_base() / "data" / "ashley.password"
+
+
+def ensure_ashley() -> None:
+    """Create Ashley once. The password is written to a root-only file and never logged."""
+    with _LOCK:
+        users = _read_users()
+        if any(str(row.get("username")).lower() == "ashley" for row in users):
+            return
+        password = secrets.token_urlsafe(18)
+        row = {
+            "username": "Ashley",
+            "password_hash": hash_password(password),
+            "role": "agent",
+            "status": "active",
+            "script_id": "truck-dispatch-sales",
+            "lead_list": "truck-dispatch",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        users.append(row)
+        _write_users(users)
+        path = ashley_password_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            users.pop()
+            _write_users(users)
+            return
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+        try:
+            os.write(fd, (password + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(path, 0o400)
+        except OSError:
+            pass
+        del password
 
 
 def client_ip(request) -> str:

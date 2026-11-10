@@ -72,6 +72,40 @@ def client(tmp_path_factory):
 
 # ── Page routes return 200 ────────────────────────────────────────────────────
 
+def test_pending_user_cannot_start_dialing(client):
+    from fastapi.testclient import TestClient
+    from src.web_app import app
+
+    created = client.post("/admin/crm/users", json={
+        "username": "pending.agent",
+        "password": "pending-pass-1",
+        "role": "agent",
+        "status": "pending",
+    })
+    assert created.status_code == 200
+    assert created.json()["user"]["status"] == "pending"
+    page = client.get("/admin/crm")
+    assert page.status_code == 200
+    assert "Ashley" in page.text
+    lines = client.get("/admin/lines")
+    assert lines.status_code == 200
+    assert "routelix_to_gv_1" in lines.text
+    assert ":99" not in lines.text
+    raw = TestClient(app)
+    login = raw.post(
+        "/login",
+        data={"username": "pending.agent", "password": "pending-pass-1"},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303
+    denied = raw.post(
+        "/api/run/start",
+        json={"dry_run": True, "limit": 1},
+        headers={"X-CSRF-Token": raw.cookies.get("routelix_csrf")},
+    )
+    assert denied.status_code == 403
+
+
 def test_dashboard_loads(client):
     r = client.get("/dashboard")
     assert r.status_code == 200

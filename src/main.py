@@ -1812,6 +1812,11 @@ def main() -> None:
         fingerprint,
         resume=not args.no_resume,
     )
+    from src.lead_crm import filter_callable
+
+    contacts, dnc_skipped = filter_callable(contacts)
+    if dnc_skipped:
+        logger.info("Do-not-call list skipped %d contact(s)", dnc_skipped)
     if cfg.use_call_intelligence:
         from src.call_intelligence import filter_dialable_contacts
 
@@ -1883,7 +1888,9 @@ def main() -> None:
 
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    requested_slots = 1
+    from src.gv_lines import line_count, parallel_profiles
+
+    requested_slots = line_count()
     logger.info(
         "Live agents=%d. Each Google Voice account places %d call at a time. %s",
         requested_slots,
@@ -2013,13 +2020,13 @@ def main() -> None:
 
     try:
         parallel_slots = build_parallel_slots(
-            requested=1,
-            max_concurrent_dials=1,
-            force_requested_slots=False,
+            requested=requested_slots,
+            max_concurrent_dials=requested_slots,
+            force_requested_slots=requested_slots > 1,
             primary_profile=profile_name,
             primary_loopback=loopback_device,
             primary_capture=capture_device,
-            parallel_profiles=[],
+            parallel_profiles=parallel_profiles(requested_slots) if requested_slots > 1 else [],
             allow_shared_audio_routes=cfg.allow_shared_audio_routes,
         )
     except ValueError as exc:

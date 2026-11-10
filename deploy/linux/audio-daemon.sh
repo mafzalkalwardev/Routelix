@@ -66,6 +66,17 @@ if command -v pipewire >/dev/null 2>&1 && command -v pipewire-pulse >/dev/null 2
   # VB-CABLE "CABLE-A Input" (playback) and "CABLE-A Output" (capture).
   load_awake_sink routelix_to_gv Routelix_TTS_to_Google_Voice || true
   load_awake_sink routelix_from_gv Routelix_Google_Voice_Speaker || true
+  lines="${ROUTELIX_LINES:-1}"
+  if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
+    lines=1
+  fi
+  if (( lines > 7 )); then
+    lines=7
+  fi
+  for ((n = 1; n <= lines; n++)); do
+    load_awake_sink "routelix_to_gv_${n}" "Routelix_TTS_line_${n}" || true
+    load_awake_sink "routelix_from_gv_${n}" "Routelix_speaker_line_${n}" || true
+  done
   pactl set-default-sink routelix_to_gv || true
   pactl set-default-source routelix_from_gv.monitor || true
   wait "$pulse_pid"

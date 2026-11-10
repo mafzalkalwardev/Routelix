@@ -176,7 +176,12 @@
       {% set user = current_user(request) %}
       {% if user %}
         {{ user.username }}{% if user.role == 'admin' %} · admin{% endif %}<br>
-        {% if user.role == 'admin' %}<a href="/admin/users">Users</a><br>{% endif %}
+        <a href="/my">My work</a><br>
+        {% if user.role == 'admin' %}
+        <a href="/admin/crm">Admin CRM</a><br>
+        <a href="/admin/lines">Lines</a><br>
+        <a href="/admin/users">Users</a><br>
+        {% endif %}
       {% endif %}
       Dev: <a href="https://wa.me/923079670503" target="_blank">Muhammad Afzal</a><br>
       ROUTELIX &mdash; v1.0

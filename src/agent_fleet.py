@@ -9,8 +9,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from src.capacity import google_voice_concurrent_calls, max_agents
-from src.linux_audio import CAPTURE_MONITOR, SINK_FROM_GV, SINK_TO_GV
+from src.capacity import configured_line_count, google_voice_concurrent_calls, max_agents
 
 
 def slot_audio(index: int) -> tuple[str, str, str]:
@@ -67,25 +66,26 @@ class Fleet:
 
     def plan(self, accounts: list[dict]) -> FleetPlan:
         enabled = [row for row in accounts if row.get("enabled", True)]
-        admitted = enabled[:1]
+        account = enabled[0] if enabled else None
+        count = configured_line_count() if account else 0
         slots: list[AgentSlot] = []
-        for account in admitted:
-            profile = str(account.get("profile_name") or "sales_profile").strip()
-            loopback = str(account.get("loopback_device") or "").strip() or SINK_TO_GV
-            capture = str(account.get("capture_device") or "").strip() or CAPTURE_MONITOR
-            slots.append(
-                AgentSlot(
-                    index=1,
-                    account_id=str(account.get("id") or ""),
-                    email=str(account.get("email") or ""),
-                    profile_name=profile,
-                    loopback_device=loopback,
-                    capture_device=capture,
-                    pulse_sink=SINK_FROM_GV,
-                    pulse_source=f"{SINK_TO_GV}.monitor",
-                    state="idle",
+        if account is not None:
+            from src.gv_lines import line_plan
+
+            for row in line_plan(count):
+                slots.append(
+                    AgentSlot(
+                        index=row["index"],
+                        account_id=str(account.get("id") or ""),
+                        email=str(account.get("email") or ""),
+                        profile_name=row["profile_name"],
+                        loopback_device=row["loopback_device"],
+                        capture_device=row["capture_device"],
+                        pulse_sink=row["pulse_sink"],
+                        pulse_source=row["pulse_source"],
+                        state="idle" if row["signed_in"] else "needs_signin",
+                    )
                 )
-            )
         with self._lock:
             self.slots = slots
             self.queued = []
