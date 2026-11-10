@@ -619,6 +619,188 @@ async def marketing_home(request: Request):
     return templates.TemplateResponse(request, "landing.html", landing_context())
 
 
+@app.get("/scripts", response_class=HTMLResponse)
+async def scripts_page(request: Request):
+    return templates.TemplateResponse(request, "scripts.html", {})
+
+
+@app.get("/voices", response_class=HTMLResponse)
+async def voices_page(request: Request):
+    from src.voice_catalog import CATALOG, rtf_label
+
+    rows = [
+        {
+            "engine": item.engine,
+            "language": item.language,
+            "voice_id": item.voice_id,
+            "label": item.label,
+            "rtf": rtf_label(item.engine),
+        }
+        for item in CATALOG
+    ]
+    return templates.TemplateResponse(request, "voices.html", {"voices": rows})
+
+
+@app.get("/api/scripts")
+async def api_scripts():
+    from src.script_engine import load_scripts
+
+    return {"ok": True, "scripts": [item.to_dict() for item in load_scripts()]}
+
+
+@app.post("/api/scripts")
+async def api_save_script(request: Request):
+    from src.script_engine import CallScript, save_script
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    save_script(script)
+    return {"ok": True, "script_id": script.script_id}
+
+
+@app.post("/api/scripts/test")
+async def api_test_script(request: Request):
+    import base64
+    from src.script_engine import CallScript, ScriptSession, record_turn
+    from src.voice_preview import synthesize_preview
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    session = ScriptSession(
+        script,
+        {
+            "first_name": str(body.get("first_name") or "Sam"),
+            "company": str(body.get("company") or script.name),
+            "product": str(body.get("product") or script.product),
+            "agent_name": str(body.get("agent_name") or "Alex"),
+        },
+    )
+    turn = session.hear(str(body.get("prospect") or ""))
+    record_turn(script.script_id, turn)
+    from src.voice_catalog import engine_of_voice
+
+    audio, note = synthesize_preview(
+        turn.line,
+        engine_of_voice(script.voice_id),
+        script.voice_id,
+        script.speed,
+        script.pitch,
+    )
+    encoded = base64.b64encode(audio).decode("ascii") if audio else ""
+    return {
+        "ok": True,
+        "state": turn.state,
+        "line": turn.line,
+        "ended": turn.ended,
+        "note": note,
+        "audio": f"data:audio/wav;base64,{encoded}" if encoded else "",
+    }
+
+
+@app.post("/api/scripts/transcribe")
+async def api_transcribe_prospect(request: Request):
+    """Turn a short browser recording into the prospect line. Nothing is dialed."""
+    import tempfile
+    from pathlib import Path
+
+    payload = await request.body()
+    if len(payload) < 200:
+        return {"ok": False, "text": "", "detail": "The recording was empty."}
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "in.bin"
+        wav = Path(folder) / "in.wav"
+        source.write_bytes(payload)
+        import subprocess
+
+        done = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(source), "-ac", "1", "-ar", "16000", str(wav)],
+            capture_output=True,
+            timeout=20,
+        )
+        if done.returncode != 0 or not wav.is_file():
+            return {"ok": False, "text": "", "detail": "Could not read that recording."}
+        import numpy as np
+        import wave
+
+        with wave.open(str(wav), "rb") as handle:
+            frames = handle.readframes(handle.getnframes())
+            rate = handle.getframerate()
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    from src.stt import LocalWhisperSTT
+    import os
+
+    try:
+        text = LocalWhisperSTT(
+            model_size=os.getenv("STT_LOCAL_MODEL", "tiny"),
+            model_dir=os.getenv("STT_MODEL_DIR", "models/stt"),
+        ).transcribe(audio, samplerate=rate)
+    except Exception as exc:
+        return {"ok": False, "text": "", "detail": f"Speech-to-text is not ready: {exc}"}
+    return {"ok": True, "text": text}
+
+
+@app.post("/api/scripts/evaluate")
+async def api_eval_script(request: Request):
+    from src.script_engine import CallScript, evaluate_script
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    result = evaluate_script(
+        script,
+        {
+            "first_name": str(body.get("first_name") or "Sam"),
+            "company": str(body.get("company") or "INDUS Web Agency"),
+            "product": str(body.get("product") or script.product),
+            "agent_name": str(body.get("agent_name") or "Alex"),
+        },
+    )
+    return {"ok": True, **result}
+
+
+@app.get("/api/scripts/{script_id}/analytics")
+async def api_script_analytics(script_id: str):
+    from src.script_engine import analytics_for
+
+    return {"ok": True, "analytics": analytics_for(script_id)}
+
+
+@app.get("/api/voices")
+async def api_voices():
+    from src.voice_catalog import CATALOG, GAPS, rtf_label
+
+    return {
+        "ok": True,
+        "gaps": list(GAPS),
+        "voices": [
+            {
+                "engine": item.engine,
+                "language": item.language,
+                "voice_id": item.voice_id,
+                "label": item.label,
+                "rtf": rtf_label(item.engine),
+            }
+            for item in CATALOG
+        ],
+    }
+
+
+@app.post("/api/voices/preview")
+async def api_voice_preview(request: Request):
+    import base64
+    from src.voice_preview import synthesize_preview
+
+    body = await request.json()
+    audio, note = synthesize_preview(
+        str(body.get("text") or ""),
+        str(body.get("engine") or "espeak"),
+        str(body.get("voice") or ""),
+        float(body.get("speed") or 1.0),
+        float(body.get("pitch") or 0.0),
+    )
+    encoded = base64.b64encode(audio).decode("ascii")
+    return {"ok": True, "note": note, "audio": f"data:audio/wav;base64,{encoded}"}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     logs = _read_call_logs(limit=10)

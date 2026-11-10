@@ -137,6 +137,12 @@ def max_agents() -> int:
     return min(requested, planned)
 
 
+def piper_rtf() -> float:
+    from src.voice_catalog import VOICE_RTF
+
+    return float(VOICE_RTF["piper"])
+
+
 def bottleneck() -> str:
     if cpu_agent_limit() <= ram_agent_limit():
         return "cpu"
@@ -160,6 +166,8 @@ def capacity_report() -> str:
         f"({CORES_PER_LIVE_CALL} core per live call on the cores left after the reservation). "
         f"faster-whisper {stt_model()} int8, 1 thread, measured {WHISPER_TINY_RTF if stt_model() in {'tiny','tiny.en'} else WHISPER_BASE_RTF:.1f}x "
         f"realtime on x86; estimated {stt_rtf():.1f}x on one ARM core. "
+        f"Piper lessac medium measured {piper_rtf():.1f}x realtime on the same x86 host "
+        f"(about {piper_rtf() * 0.6:.0f}x if ARM is 0.6 of that). "
         f"The limiter is {kind}. Safe simultaneous agents: {max_agents()}."
     )
 
@@ -185,6 +193,7 @@ def component_budget() -> dict:
         "stt_model": stt_model(),
         "stt_rtf_x86": WHISPER_TINY_RTF if stt_model() in {"tiny", "tiny.en"} else WHISPER_BASE_RTF,
         "stt_rtf_arm_estimate": round(stt_rtf(), 2),
+        "piper_rtf_x86": piper_rtf(),
         "calls_per_account": GOOGLE_VOICE_CONCURRENT_CALLS,
         "cores_per_live_call": CORES_PER_LIVE_CALL,
     }

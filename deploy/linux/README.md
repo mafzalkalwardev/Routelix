@@ -143,3 +143,15 @@ The console's parallel dialer also restarts a crashed slot browser up to 3 times
 ## 8. Operators
 
 The admin created from `ROUTELIX_ADMIN_PASSWORD` opens **Users** and adds operator accounts. Passwords are PBKDF2-SHA256 hashes in `data/users.json`. Login attempts are limited to 8 failures per 15 minutes per IP in this process.
+
+## 9. Scripts and extra voices
+
+The call script is edited at `/scripts`. Built-in templates cover a generic B2B appointment and INDUS Web Agency work: web development, SEO, AI bots and automation, and MailForge. Set `ACTIVE_SCRIPT_ID` (for example `indus-web`) so a live call follows that script. The page can type or hold-to-speak as the prospect. Nothing on that page dials.
+
+`install.sh` fetches Piper lessac medium. More voices:
+
+```bash
+bash deploy/linux/download_voices.sh en_US-lessac-medium en_GB-alba-medium es_MX-ald-medium fr_FR-siwis-medium
+```
+
+Files land in `models/piper` and are not committed. Piper has no Urdu, Punjabi, Sindhi, or Haitian Creole voice. Kokoro needs its own model download and was not timed on this host. Lessac medium measured 47.6x realtime on a 4-vCPU x86 box (12.3 seconds of speech in 0.26 seconds). `/voices` shows that factor and an estimate for the engines that were not timed.

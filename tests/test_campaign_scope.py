@@ -24,24 +24,26 @@ def test_one_google_voice_call_and_cpu_is_the_limit(monkeypatch):
     assert "4" in report
 
 
-def test_voice_catalog_is_english_and_spanish_only():
+def test_voice_catalog_lists_local_voices_and_real_gaps():
+    from src.voice_catalog import GAPS
+
     languages = {item.language for item in CATALOG}
-    assert languages == {"en", "es"}
+    assert {"en", "es", "fr"} <= languages
     ids = {item.voice_id for item in CATALOG}
-    assert "ff_siwis" not in ids
-    assert "fr_FR" not in " ".join(ids)
+    assert "en_US-ryan-high" in ids
+    assert "en_GB-alba-medium" in ids
+    assert "fr_FR-siwis-medium" in ids
+    assert "ff_siwis" in ids
     assert "ef_dora" in ids and "em_alex" in ids
-    assert "es_MX-ald-medium" in ids
-    assert "es_ES-davefx-medium" in ids
-    assert len(voices_for("en", "piper")) >= 3
-    assert len(voices_for("es", "edge")) >= 3
+    assert {gap["language"] for gap in GAPS} == {"ur", "pa", "sd", "ht"}
+    assert len(voices_for("en", "piper")) >= 6
     assert language_of_voice("es-MX-DaliaNeural") == "es"
     try:
-        voices_for("fr")
+        voices_for("ur")
     except ValueError as exc:
-        assert "English and Spanish" in str(exc)
+        assert "Urdu" in str(exc) or "ur" in str(exc)
     else:
-        raise AssertionError("French was accepted")
+        raise AssertionError("Urdu was offered")
 
 
 def test_only_generic_b2b_appointment_templates():
@@ -54,6 +56,30 @@ def test_only_generic_b2b_appointment_templates():
     assert "Lucía" in spanish["opener"]
     assert objection_reply("please stop calling", "en").startswith("I will mark")
     assert objection_reply("no me interesa", "es")
+
+
+def test_script_engine_stays_on_script_and_blocks_invented_prices():
+    from src.script_engine import builtin_templates, evaluate_script, guard_reply
+
+    script = next(item for item in builtin_templates() if item.script_id == "indus-web")
+    variables = {
+        "first_name": "Sam",
+        "company": "INDUS Web Agency",
+        "product": script.product,
+        "agent_name": "Alex",
+    }
+
+    def inventing_model(_prompt: str) -> str:
+        return "The website package is $499 a month and we guarantee page one."
+
+    guarded = evaluate_script(script, variables, llm=inventing_model)
+    assert guarded["pass_rate"] == 1.0
+    price = next(row for row in guarded["details"] if "cost" in row["utterance"])
+    assert "$" not in price["line"]
+    assert guard_reply("It is $50.", script, variables, "no price here") is None
+
+    plain = evaluate_script(script, variables, llm=None)
+    assert plain["pass_rate"] == 1.0
 
 
 def test_fleet_admits_up_to_max_and_queues_the_rest(monkeypatch):

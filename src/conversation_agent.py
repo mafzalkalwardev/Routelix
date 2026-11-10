@@ -165,6 +165,8 @@ class ConversationAgent:
         self._engaged: bool = False
         self._llm_failures: int = 0
         self._llm_down: bool = False
+        self._script_session = None
+        self._script_ended = False
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -193,6 +195,13 @@ class ConversationAgent:
         Generate a response to what the prospect said.
         Updates conversation history. Returns the agent's reply.
         """
+        scripted = self._reply_from_script(prospect_text)
+        if scripted is not None:
+            self._history.append({"role": "user", "content": prospect_text})
+            self._history.append({"role": "assistant", "content": scripted})
+            self._turn_count += 1
+            return scripted
+
         self._history.append({"role": "user", "content": prospect_text})
         self._turn_count += 1
         update_state_from_utterance(self.state, prospect_text)
@@ -226,6 +235,8 @@ class ConversationAgent:
         Turn count, objections, and a missed reply do not hang up. The call
         stays open until they end it or Google Voice shows it has ended.
         """
+        if self._script_ended:
+            return True
         return self.state.interest_level == "DNC"
 
     def goodbye_line(self) -> str:
@@ -285,6 +296,33 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
     # Internal
     # ------------------------------------------------------------------ #
+
+    def _reply_from_script(self, prospect_text: str) -> str | None:
+        script_id = os.getenv("ACTIVE_SCRIPT_ID", "").strip()
+        if not script_id:
+            return None
+        from src.script_engine import ScriptSession, get_script, record_turn
+
+        if self._script_session is None or self._script_session.script.script_id != script_id:
+            script = get_script(script_id)
+            if script is None:
+                return None
+            self._script_session = ScriptSession(
+                script,
+                {
+                    "first_name": self.contact_name or "there",
+                    "company": self.company_name,
+                    "product": script.product,
+                    "agent_name": self.agent_name,
+                },
+            )
+        turn = self._script_session.hear(prospect_text, llm=self._paraphrase_script)
+        record_turn(script_id, turn)
+        self._script_ended = turn.ended
+        return turn.line
+
+    def _paraphrase_script(self, prompt: str) -> str:
+        return self._raw_complete(prompt, max_tokens=60)
 
     def _build_system_prompt(self) -> str:
         prompt = build_dynamic_system_prompt(
