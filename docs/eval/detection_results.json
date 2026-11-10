@@ -1,0 +1,272 @@
+{
+  "dataset": {
+    "manifest": "/workspace/data/eval_audio/manifest.json",
+    "scene_clips": 137,
+    "phrases": 33,
+    "sources": [
+      "esc50",
+      "espeak-ng",
+      "librispeech-plus-beep",
+      "librispeech-test-clean",
+      "synthetic-beep",
+      "synthetic-silence"
+    ]
+  },
+  "acoustic": {
+    "description": "Transcript forced empty. Labels are human, machine, silence, noise.",
+    "before": {
+      "n": 137,
+      "accuracy": 0.438,
+      "per_class": {
+        "human": {
+          "precision": 0.3478,
+          "recall": 1.0,
+          "support": 40
+        },
+        "machine": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 37
+        },
+        "silence": {
+          "precision": 0.9091,
+          "recall": 1.0,
+          "support": 20
+        },
+        "noise": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 40
+        }
+      }
+    },
+    "after": {
+      "n": 137,
+      "accuracy": 0.8467,
+      "per_class": {
+        "human": {
+          "precision": 0.6964,
+          "recall": 0.975,
+          "support": 40
+        },
+        "machine": {
+          "precision": 1.0,
+          "recall": 0.7568,
+          "support": 37
+        },
+        "silence": {
+          "precision": 0.8696,
+          "recall": 1.0,
+          "support": 20
+        },
+        "noise": {
+          "precision": 0.9667,
+          "recall": 0.725,
+          "support": 40
+        }
+      }
+    },
+    "by_source_correct": {
+      "librispeech-test-clean": {
+        "n": 40,
+        "before": 40,
+        "after": 39
+      },
+      "esc50": {
+        "n": 40,
+        "before": 0,
+        "after": 29
+      },
+      "synthetic-silence": {
+        "n": 20,
+        "before": 20,
+        "after": 20
+      },
+      "synthetic-beep": {
+        "n": 15,
+        "before": 0,
+        "after": 15
+      },
+      "librispeech-plus-beep": {
+        "n": 10,
+        "before": 0,
+        "after": 10
+      },
+      "espeak-ng": {
+        "n": 12,
+        "before": 0,
+        "after": 3
+      }
+    }
+  },
+  "with_known_transcript": {
+    "description": "Same audio. espeak prompts keep their text, which is what a correct STT pass would hand the keyword detector. Other clips have no transcript.",
+    "before": {
+      "n": 137,
+      "accuracy": 0.4964,
+      "per_class": {
+        "human": {
+          "precision": 0.3738,
+          "recall": 1.0,
+          "support": 40
+        },
+        "machine": {
+          "precision": 1.0,
+          "recall": 0.2162,
+          "support": 37
+        },
+        "silence": {
+          "precision": 0.9091,
+          "recall": 1.0,
+          "support": 20
+        },
+        "noise": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 40
+        }
+      }
+    },
+    "after": {
+      "n": 137,
+      "accuracy": 0.9124,
+      "per_class": {
+        "human": {
+          "precision": 0.8298,
+          "recall": 0.975,
+          "support": 40
+        },
+        "machine": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "support": 37
+        },
+        "silence": {
+          "precision": 0.8696,
+          "recall": 1.0,
+          "support": 20
+        },
+        "noise": {
+          "precision": 0.9667,
+          "recall": 0.725,
+          "support": 40
+        }
+      }
+    }
+  },
+  "phrases": {
+    "description": "Hand-labeled lines. uncertain predictions count as misses.",
+    "before": {
+      "n": 33,
+      "accuracy": 0.5455,
+      "per_class": {
+        "human": {
+          "precision": 1.0,
+          "recall": 0.4211,
+          "support": 19
+        },
+        "machine": {
+          "precision": 1.0,
+          "recall": 0.6667,
+          "support": 12
+        },
+        "silence": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "support": 2
+        }
+      }
+    },
+    "after": {
+      "n": 33,
+      "accuracy": 1.0,
+      "per_class": {
+        "human": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "support": 19
+        },
+        "machine": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "support": 12
+        },
+        "silence": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "support": 2
+        }
+      }
+    }
+  },
+  "piper_prosody": {
+    "voice": "en_US-lessac-medium.onnx",
+    "text": "Hi, this is Ashley from Indus Transports. Are you still dispatching solo? I can help with the M C number and a quick follow up.",
+    "before": {
+      "seconds": 7.169886621315193,
+      "pause_count_70ms": 4,
+      "pause_seconds": [
+        0.1,
+        0.37,
+        0.41,
+        0.08
+      ]
+    },
+    "after": {
+      "seconds": 7.86140589569161,
+      "pause_count_70ms": 5,
+      "pause_seconds": [
+        0.39,
+        0.37,
+        0.48,
+        0.31,
+        0.09
+      ],
+      "synth_seconds": 0.1447705800001131
+    },
+    "note": "Both renders use length_scale 1.07 and noise scales 0 so the gap list does not move between runs. Pause count is runs of near-silence at least 70 ms. This is an acoustic proxy for clause breathing, not a listening test."
+  },
+  "wer": {
+    "model": "tiny.en",
+    "summary": {
+      "clean": {
+        "n": 24,
+        "before_wer": 0.0416,
+        "after_wer": 0.0416
+      },
+      "noisy": {
+        "n": 24,
+        "before_wer": 0.0704,
+        "after_wer": 0.0704
+      }
+    },
+    "clip_count": 48
+  },
+  "false_transcripts": {
+    "model": "tiny.en",
+    "note": "Rate is the fraction of clips where the transcript is non-empty. Noise is not sent to the model after the change. Silence still is.",
+    "counts": {
+      "noise": {
+        "n": 40,
+        "before_nonempty": 3,
+        "after_nonempty": 3,
+        "before_rate": 0.075,
+        "after_rate": 0.075
+      },
+      "silence": {
+        "n": 20,
+        "before_nonempty": 0,
+        "after_nonempty": 0,
+        "before_rate": 0.0,
+        "after_rate": 0.0
+      },
+      "white_noise": {
+        "n": 8,
+        "before_nonempty": 0,
+        "after_nonempty": 0,
+        "before_rate": 0.0,
+        "after_rate": 0.0
+      }
+    }
+  }
+}

@@ -96,7 +96,7 @@ Every operator tab, then the CRM list and a profile with sample records.
 - Browser-based calling automation using Selenium and persistent Chrome profiles (headless live dials supported).
 - Live call-state detection with conservative ringing, connected, ended, failed, and voicemail transitions.
 - Realtime speech capture with VAD, local or Groq STT, local or Groq LLM, and Kokoro/Piper/Edge TTS playback.
-- Safer mailbox vs person gating: beep/keyword hard proof, short human “hello” lock, and saved-greeting fingerprints that cannot drop a live pickup alone.
+- Safer mailbox vs person gating: a narrow beep, a mailbox or IVR phrase, or a long greeting. A short voiced “hello” can lock a person. Steady noise does not. A saved-greeting fingerprint cannot drop a live pickup alone.
 - Silent dialing by default with optional **Listen-in** (top bar, Live Run, Audio) so Speakers unmute only when you want to hear both sides; mixed recordings always keep both voices.
 - Auto Windows audio route for VB-CABLE (TTS → CABLE Input, Chrome mic → CABLE Output, capture → Speakers loopback).
 - Live CRM status banners while a call is active, plus call logs, transcripts, recordings, connected-call archive, failed-call archive, and carrier CRM enrichment.
@@ -150,7 +150,38 @@ PIPER_NOISE_SCALE=0.667
 PIPER_NOISE_W_SCALE=0.8
 ```
 
-`PIPER_LENGTH_SCALE` controls speaking pace; the noise settings control voice variation. If a model or dependency is missing, startup reports the configuration error explicitly.
+`PIPER_LENGTH_SCALE` controls speaking pace; the noise settings control voice variation. Those three settings are unchanged. Piper also splits a line on commas and long clauses and leaves a short silence between them, and questions get a slightly slower scale on top of `PIPER_LENGTH_SCALE`. Edge TTS uses the same wording pass and adds SSML breaks at those commas. If the SSML request fails, the line is spoken as plain text. If a model or dependency is missing, startup reports the configuration error explicitly.
+
+---
+
+## Voice and detection eval
+
+`scripts/download_eval_audio.py` downloads a small set and does not commit it:
+
+- LibriSpeech `test-clean` (OpenSLR) for read speech and for word error rate
+- ESC-50 non-tonal classes (rain, engines, vacuums, and similar) for noise
+- Synthetic silence, noisy beeps, speech-then-beep, and espeak-ng mailbox/IVR lines
+
+`scripts/eval_call_audio.py` scores the previous rules and the current ones on that set. The measured run is in `docs/eval/detection_results.json`. It is not a listening test and it is not a set of real Google Voice recordings.
+
+Scene labels, transcript forced empty, 137 clips (40 human, 37 machine, 20 silence, 40 noise):
+
+| | accuracy | human P / R | machine P / R | silence P / R | noise P / R |
+|---|---:|---:|---:|---:|---:|
+| Before | 0.438 | 0.3478 / 1.000 | 0.000 / 0.000 | 0.9091 / 1.000 | 0.000 / 0.000 |
+| After | 0.8467 | 0.6964 / 0.975 | 1.000 / 0.7568 | 0.8696 / 1.000 | 0.9667 / 0.725 |
+
+The old energy detector called noise and beeps “human”, so human recall stayed at 1.0 while precision stayed low, and machine and noise recall stayed at 0 on this set. By source, LibriSpeech went from 40/40 to 39/40, ESC-50 noise from 0/40 to 29/40, pure silence stayed 20/20, synthetic beeps went from 0/15 to 15/15, and speech-then-beep went from 0/10 to 10/10. espeak-ng prompts with no transcript went from 0/12 to 3/12. The other nine still sound enough like speech that pitch flatness does not mark them.
+
+When those espeak lines are passed in as the transcript (a correct STT result), machine recall on the 37 machine clips goes from 0.2162 to 1.000, and overall accuracy goes from 0.4964 to 0.9124.
+
+On 33 hand-labeled lines (19 human replies, 12 mailbox/IVR lines, 2 blanks), phrase accuracy went from 0.5455 to 1.000. Human recall went from 0.4211 to 1.000. Machine recall went from 0.6667 to 1.000. That list is the lines this change targeted, including “okay”, “not interested”, and “press one”. It is not a sample of every thing a person can say.
+
+Word error rate uses faster-whisper `tiny.en` on 24 LibriSpeech utterances, clean and again mixed with ESC-50 noise at about 8 dB. The shipped audio conditioner is the previous peak normalize. Clean WER is 0.0416 before and after. Noisy WER is 0.0704 before and after. A noise-bed attenuator was tried on the same clips and made noisy WER worse (0.078 to 0.259 on that earlier run), so it was not kept. tiny.en returned a non-empty transcript on 3 of 40 ESC-50 clips both before and after (0.075). Those three still look speech-like, so the noise guard does not drop them. Silence was 0/20. Eight synthetic white-noise clips were also 0/8 for tiny.en, so this model did not show a hallucination drop there. The call path still refuses noise before STT.
+
+Piper prosody on one fixed line, `en_US-lessac-medium`, `PIPER_LENGTH_SCALE=1.07`, noise scales at 0 so the render does not wander between runs. Near-silence gaps of at least 70 ms went from 4 (0.10 s, 0.37 s, 0.41 s, 0.08 s) to 5 (0.39 s, 0.37 s, 0.48 s, 0.31 s, 0.09 s). The line grew from 7.17 s to 7.86 s. That is the comma after “Hi” and a breath before “and”, not a mean-opinion score.
+
+Still needs real call recordings before the thresholds should be treated as tuned: carrier beeps outside a narrow 700–1600 Hz tone, human-recorded greetings that never say a mailbox phrase, phone noise that is harmonic (several ESC-50 vacuums and helicopters are still called speech), and word error rate on Google Voice audio rather than LibriSpeech.
 
 ---
 
@@ -184,7 +215,7 @@ Current behavior:
 - Connected state waits for stable evidence such as answered controls or call timer signals.
 - The AI opening line starts only after confirmed connection.
 - `max_ring_seconds` ends the attempt as no answer only after the configured ring timeout.
-- Short inbound speech bursts lock human pickup before fingerprint matching can race ahead of STT.
+- A short voiced inbound burst (about 0.3–1.6 s) locks human pickup before fingerprint matching can race ahead of STT. Noise does not.
 - Saved mailbox greeting fingerprints are a second vote only; beep or mailbox keywords still confirm a drop.
 - Logs include current state, elapsed ringing time, DOM cues, answered controls, call-active status, voicemail cues, audio classifier result, and timeout reason.
 

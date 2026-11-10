@@ -215,7 +215,10 @@ def test_response_loop_calls_stt_then_agent_then_tts():
         mock_agent.goodbye_line.return_value = ""
         loop._stream_llm_replies = False
 
-        audio_seg = np.random.rand(16000).astype(np.float32) * 0.1
+        t = np.arange(16000) / 16000.0
+        audio_seg = np.zeros(16000, dtype=np.float32)
+        for harmonic in range(1, 6):
+            audio_seg += np.float32(0.15 / harmonic) * np.sin(2 * np.pi * 160 * harmonic * t)
         loop._speech_q.put(audio_seg)
 
         # Patch _wait_for_tts to be instant

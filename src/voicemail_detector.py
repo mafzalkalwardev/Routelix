@@ -81,7 +81,40 @@ VOICEMAIL_KEYWORDS = (
     "no one is available",
     "person you are trying to reach",
     "the person you called",
+    # IVR / carrier trees. These are machines even when nobody says "voicemail".
+    "press 1",
+    "press one",
+    "press 2",
+    "press two",
+    "press 3",
+    "press three",
+    "press 0",
+    "press zero",
+    "press star",
+    "press pound",
+    "for english",
+    "para espanol",
+    "para español",
+    "main menu",
+    "menu options",
+    "these options have changed",
+    "dial it at any time",
+    "party's extension",
+    "partys extension",
+    "to repeat this message",
+    "automated attendant",
+    "no longer in service",
+    "been disconnected",
+    "please hang up",
+    "try your call again",
+    "mailbox is full",
+    "voice message system",
 )
+
+# Uninterrupted speech this long, during the opening hold, is a scripted
+# greeting. The hold only watches about 3.2s and treats a 280ms pause as a
+# person, so this flag has to flip while the greeting is still being spoken.
+LONG_GREETING_SECONDS = 2.8
 
 # Carrier / Google Voice style: "Telephone number 417… can't take your call"
 _CARRIER_TELEPHONE_NUMBER = (
@@ -317,6 +350,7 @@ class BeepDetector:
         self.config = config or BeepDetectorConfig()
         self._beep_frames_active = 0
         self._beep_confirmed = False
+        self._last_hz = 0.0
         self._reset_beep()
 
     # ------------------------------------------------------------------ #
@@ -338,10 +372,15 @@ class BeepDetector:
         if rms < self.config.speech_rms_threshold:
             # Silence — reset beep counter
             self._beep_frames_active = 0
+            self._last_hz = 0.0
             return False
 
-        is_beep = self._is_beep_frame(frame, sr)
+        is_beep, dominant_hz = self._is_beep_frame(frame, sr)
         if is_beep:
+            if self._last_hz and abs(dominant_hz - self._last_hz) > 100.0:
+                # A vowel's strongest partial wanders. A beep does not.
+                self._beep_frames_active = 0
+            self._last_hz = dominant_hz
             self._beep_frames_active += 1
             frames_needed = int(
                 self.config.min_duration_s * 1000 / self.config.frame_ms
@@ -349,13 +388,14 @@ class BeepDetector:
             if self._beep_frames_active >= frames_needed and not self._beep_confirmed:
                 self._beep_confirmed = True
                 logger.info(
-                    "[BEEP] Voicemail beep confirmed (%d frames, %.0f Hz band)",
+                    "[BEEP] Voicemail beep confirmed (%d frames, %.0f Hz)",
                     self._beep_frames_active,
-                    (self.config.beep_low_hz + self.config.beep_high_hz) / 2,
+                    dominant_hz,
                 )
                 return True
         else:
             self._beep_frames_active = 0
+            self._last_hz = 0.0
 
         return False
 
@@ -369,30 +409,32 @@ class BeepDetector:
     def _reset_beep(self) -> None:
         self._beep_frames_active = 0
         self._beep_confirmed = False
+        self._last_hz = 0.0
 
-    def _is_beep_frame(self, frame: np.ndarray, samplerate: int) -> bool:
+    def _is_beep_frame(self, frame: np.ndarray, samplerate: int) -> tuple[bool, float]:
         """
-        Return True if the frame's FFT shows the majority of energy in the beep band.
+        Return whether this frame is a narrow beep, plus its dominant frequency.
+
+        Band energy alone false-triggers on vowels whose harmonics sit between
+        700 and 1600 Hz. A beep keeps almost all of its energy inside one
+        160 Hz lobe and stays put from frame to frame.
         """
-        n = len(frame)
-        if n < 64:
-            return False
+        from src.audio_scene import analyze_frame, is_tone_frame
 
-        # Hamming window to reduce spectral leakage
-        windowed = frame * np.hamming(n)
-        spectrum = np.abs(np.fft.rfft(windowed))
-        freqs = np.fft.rfftfreq(n, d=1.0 / samplerate)
-
-        if len(spectrum) < 2 or spectrum.sum() == 0:
-            return False
-
-        # Energy in beep band vs total
-        mask_beep = (freqs >= self.config.beep_low_hz) & (freqs <= self.config.beep_high_hz)
-        energy_beep = float(spectrum[mask_beep].sum())
-        energy_total = float(spectrum.sum())
-
-        ratio = energy_beep / energy_total if energy_total > 0 else 0.0
-        return ratio >= self.config.energy_ratio_threshold
+        features = analyze_frame(
+            frame,
+            samplerate,
+            beep_low_hz=self.config.beep_low_hz,
+            beep_high_hz=self.config.beep_high_hz,
+        )
+        if features.rms < self.config.speech_rms_threshold:
+            return False, 0.0
+        return is_tone_frame(
+            features,
+            beep_low_hz=self.config.beep_low_hz,
+            beep_high_hz=self.config.beep_high_hz,
+            band_ratio_min=self.config.energy_ratio_threshold,
+        ), features.dominant_hz
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +485,7 @@ class VoicemailAudioClassifier:
         self._continuous_speech_frames: int = 0
         self._longest_speech_frames: int = 0
         self._silence_frames: int = 0
+        self._noise_frames: int = 0
         self._start_time: float = time.monotonic()
         self._last_label: str = _VM_LABEL_UNCERTAIN
         self.beep_ready: bool = False
@@ -469,7 +512,10 @@ class VoicemailAudioClassifier:
             self._last_label = _VM_LABEL_BEEP
             return _VM_LABEL_BEEP
 
-        if rms >= self._speech_rms:
+        from src.audio_scene import frame_kind
+
+        kind = frame_kind(frame, sr, speech_rms=self._speech_rms)
+        if kind == "speech":
             self._speech_frames += 1
             self._continuous_speech_frames += 1
             self._longest_speech_frames = max(
@@ -477,9 +523,15 @@ class VoicemailAudioClassifier:
                 self._continuous_speech_frames,
             )
             self._silence_frames = 0
-        else:
+        elif kind == "silence":
             self._continuous_speech_frames = 0
             self._silence_frames += 1
+        else:
+            # Noise and tones are not speech and not the pause after a greeting.
+            self._continuous_speech_frames = 0
+            self._silence_frames = 0
+            if kind == "noise":
+                self._noise_frames += 1
 
         label = self._classify()
         self._last_label = label
@@ -492,6 +544,7 @@ class VoicemailAudioClassifier:
         self._continuous_speech_frames = 0
         self._longest_speech_frames = 0
         self._silence_frames = 0
+        self._noise_frames = 0
         self._start_time = time.monotonic()
         self._last_label = _VM_LABEL_UNCERTAIN
         self.beep_ready = False
@@ -514,29 +567,33 @@ class VoicemailAudioClassifier:
     def _classify(self) -> str:
         elapsed = time.monotonic() - self._start_time
 
-        if elapsed > self._vm_window:
+        if elapsed > self._vm_window and self._speech_frames > 0:
             # Too long to still be a voicemail — likely a long live call
             return _VM_LABEL_LIVE
 
-        if self._speech_frames < _VM_SPEECH_FRAMES_REQUIRED:
-            # Not enough speech yet to classify
-            return _VM_LABEL_UNCERTAIN
+        speech_s = self._speech_frames * self._frame_ms / 1000.0
+        silence_s = self._silence_frames * self._frame_ms / 1000.0
+        continuous_s = self._continuous_speech_frames * self._frame_ms / 1000.0
 
-        # Enough prior speech + current silence → voicemail greeting likely done
-        if self._silence_frames >= _VM_SILENCE_FRAMES_REQUIRED:
+        # The opening hold confirms a long greeting only while speech is still
+        # going. A 450 ms pause cannot be the signal: the hold already treats
+        # 280 ms of silence as a live person and starts the sales line.
+        if continuous_s >= LONG_GREETING_SECONDS:
+            self.machine_pattern_detected = True
+
+        # A mailbox monologue that then actually stops is the later evidence
+        # path. A 240 ms pause, or a steady RMS, is not that pattern.
+        if speech_s >= 5.0 and silence_s >= 0.45:
+            self.machine_pattern_detected = True
             return _VM_LABEL_GREETING
 
-        # Look for monotone energy pattern (pre-recorded greeting tends to be
-        # more consistent than live speech)
-        if len(self._rms_window) >= 30:
-            rms_arr = np.array(list(self._rms_window))
-            cv = rms_arr.std() / (rms_arr.mean() + 1e-9)
-            # Low coefficient of variation = consistent = likely pre-recorded
-            if cv < 0.45 and self._speech_frames > 40:
-                self.machine_pattern_detected = True
-                return _VM_LABEL_GREETING
+        if self._speech_frames < _VM_SPEECH_FRAMES_REQUIRED:
+            return _VM_LABEL_UNCERTAIN
 
-        return _VM_LABEL_LIVE
+        if self._continuous_speech_frames > 0 or silence_s >= 0.45:
+            return _VM_LABEL_LIVE
+
+        return _VM_LABEL_UNCERTAIN
 
 
 # ---------------------------------------------------------------------------

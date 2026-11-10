@@ -1078,6 +1078,7 @@ def _run_realtime_loop(
             speech_threshold=vad_threshold,
             silence_trigger_frames=vad_silence_frames,
             speech_trigger_frames=vad_speech_frames,
+            speech_like_gate=True,
         )
         loop = ConversationLoop(
             capture_device_hint=capture_device,

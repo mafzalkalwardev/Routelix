@@ -575,28 +575,53 @@ def _render_piper_phrase(
     noise_scale: float = 0.5,
     noise_w_scale: float = 0.92,
 ) -> tuple[np.ndarray, int]:
-    """Speak each sentence on its own, with a short breath between them."""
-    import re
+    """Speak clause by clause so commas and questions are not one flat run."""
+    from src.speech_style import clause_prosody, split_spoken_clauses
 
-    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
+    parts = split_spoken_clauses(text.strip())
     if not parts:
         raise ValueError("Cannot synthesize empty text")
     chunks: list[np.ndarray] = []
     rate = 22050
-    for index, part in enumerate(parts):
-        audio, rate = _piper_synthesize(
-            part,
-            voice,
-            length_scale=length_scale,
-            noise_scale=noise_scale,
-            noise_w_scale=noise_w_scale,
+    for clause, pause in parts:
+        clause_length, clause_noise, clause_w = clause_prosody(
+            clause,
+            length_scale,
+            noise_scale,
+            noise_w_scale,
         )
-        if index:
-            chunks.append(np.zeros(int(rate * 0.16), dtype=np.float32))
+        spoken = " ".join(clause.replace(";", ",").replace(":", ",").split())
+        audio, rate = _piper_synthesize(
+            spoken,
+            voice,
+            length_scale=clause_length,
+            noise_scale=clause_noise,
+            noise_w_scale=clause_w,
+        )
         chunks.append(audio)
-    if len(chunks) == 1:
-        return chunks[0], rate
-    return np.concatenate(chunks), rate
+        if pause > 0:
+            chunks.append(np.zeros(int(rate * pause), dtype=np.float32))
+    rendered = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+    return _warm_phone_audio(rendered, rate), rate
+
+
+def _warm_phone_audio(audio: np.ndarray, rate: int) -> np.ndarray:
+    """Soft-clip peaks so a phone codec is not hit with Piper spikes.
+
+    This is a memoryless tanh, not a sample loop, so it does not add a
+    noticeable delay on top of synthesis.
+    """
+    del rate
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0 or float(np.max(np.abs(audio))) < 1e-5:
+        return np.array(audio, dtype=np.float32, copy=True)
+    drive = np.float32(1.35)
+    out = np.tanh(audio * drive) / np.float32(np.tanh(drive))
+    out = out.astype(np.float32, copy=False)
+    peak = float(np.max(np.abs(out)))
+    if peak > 0.82:
+        out = out * np.float32(0.82 / peak)
+    return out
 
 
 def _piper_synthesize(
@@ -665,6 +690,24 @@ def _soften_piper_audio(audio: np.ndarray, rate: int) -> np.ndarray:
 
 
 def _edge_synthesize(text: str, voice: str) -> tuple[np.ndarray, int]:
+    """Call edge-tts and decode the returned MP3 to a float32 numpy array.
+
+    SSML adds clause breaths. If the service rejects the markup, the same
+    words are spoken as plain text so a call still gets audio.
+    """
+    from src.speech_style import humanize_for_speech, to_edge_ssml
+
+    spoken = humanize_for_speech(text) or (text or "").strip()
+    ssml = to_edge_ssml(spoken)
+    if ssml:
+        try:
+            return _edge_communicate(ssml, voice)
+        except Exception as exc:
+            logger.warning("edge-tts SSML failed (%s); retrying plain text", exc)
+    return _edge_communicate(spoken or text, voice)
+
+
+def _edge_communicate(text: str, voice: str) -> tuple[np.ndarray, int]:
     """Call edge-tts and decode the returned MP3 to a float32 numpy array."""
     import asyncio
     import edge_tts

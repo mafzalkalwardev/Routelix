@@ -32,8 +32,12 @@ _QUIET_SPEECH_TARGET = 0.22
 _HALLUCINATIONS = frozenset({
     "thank you",
     "thanks for watching",
+    "thank you for watching",
+    "thanks for watching.",
     "you",
     "bye",
+    "music",
+    "applause",
     "subtitles by the amara.org community",
 })
 
@@ -109,7 +113,7 @@ class GroqWhisperSTT:
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
 
         raw_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
-        audio = _condition_stt_audio(audio)
+        audio = _condition_stt_audio(audio, samplerate)
         # Caller prompt is forwarded unchanged. Conversation loop already adds
         # carrier context; an extra prefix here would break that contract.
         enriched_prompt = (prompt or "").strip()
@@ -210,7 +214,7 @@ class LocalWhisperSTT:
         if duration > _MAX_DURATION_S:
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
         raw_peak = float(np.max(np.abs(audio))) if audio.size else 0.0
-        audio = _condition_stt_audio(audio)
+        audio = _condition_stt_audio(audio, samplerate)
         if samplerate != 16000 and audio.size:
             target = int(len(audio) * 16000 / samplerate)
             positions = np.linspace(0, len(audio) - 1, max(target, 1))
@@ -258,8 +262,14 @@ class LocalWhisperSTT:
 # Helpers
 # ------------------------------------------------------------------ #
 
-def _condition_stt_audio(audio: np.ndarray) -> np.ndarray:
-    """Lift quiet speech into the range Whisper hears, and leave silence alone."""
+def _condition_stt_audio(audio: np.ndarray, samplerate: int = 16000) -> np.ndarray:
+    """Lift quiet speech into the range Whisper hears, and leave silence alone.
+
+    A noise-bed gate was measured on the LibriSpeech eval set and raised noisy
+    word error rate, so it is not applied. ``samplerate`` is accepted so callers
+    can pass the clip rate without a second code path.
+    """
+    del samplerate
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     if audio.size == 0:
         return audio

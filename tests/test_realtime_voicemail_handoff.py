@@ -196,8 +196,45 @@ def test_short_inbound_burst_locks_human_before_fingerprint_can_drop():
 
     import numpy as np
 
-    segment = np.zeros(int(16000 * 0.72), dtype=np.float32)
+    # A short voiced burst, not silence or noise. Noise must not lock a person.
+    t = np.arange(int(16000 * 0.72)) / 16000.0
+    segment = np.zeros(t.shape, dtype=np.float32)
+    for harmonic in range(1, 8):
+        segment += np.float32(0.2 / harmonic) * np.sin(2 * np.pi * 150 * harmonic * t).astype(np.float32)
     loop._handle_speech_segment(segment, ended_monotonic=10.0)
 
     assert loop._vm_human_detected is True
     assert loop._greeting_matched is False
+
+
+def test_opening_hold_drops_a_long_greeting_before_the_sales_line():
+    import numpy as np
+    import threading
+
+    from src.voicemail_detector import LONG_GREETING_SECONDS, VoicemailAudioClassifier
+
+    loop = ConversationLoop.__new__(ConversationLoop)
+    loop._stop_event = threading.Event()
+    loop._voicemail_detected = False
+    loop._vm_human_detected = False
+    loop._answer_confirmed = threading.Event()
+    loop._answer_confirmed.set()
+    loop._session = None
+    loop.tts = MagicMock()
+    loop.stop = MagicMock()
+    loop._voicemail_detector = VoicemailAudioClassifier()
+
+    sr = 16000
+    seconds = LONG_GREETING_SECONDS + 0.12
+    t = np.arange(int(sr * seconds)) / sr
+    vowel = np.zeros(t.shape, dtype=np.float32)
+    for harmonic in range(1, 8):
+        vowel += np.float32(0.2 / harmonic) * np.sin(2 * np.pi * 140 * harmonic * t)
+    frame = int(sr * 0.03)
+    for start in range(0, len(vowel) - frame, frame):
+        loop._voicemail_detector.process_frame(vowel[start : start + frame], samplerate=sr)
+
+    loop._hold_opening_for_machine_greeting()
+
+    assert loop._voicemail_detected is True
+    loop.stop.assert_called_once()
