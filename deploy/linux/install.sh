@@ -21,7 +21,7 @@ apt-get install -y \
   python3 python3-venv python3-dev python3-pip \
   build-essential pkg-config \
   ca-certificates curl wget gnupg \
-  pulseaudio-utils ffmpeg \
+  pipewire pipewire-pulse wireplumber pulseaudio-utils ffmpeg \
   fonts-liberation espeak-ng \
   xvfb x11vnc novnc websockify \
   nginx certbot python3-certbot-nginx \
@@ -132,6 +132,17 @@ fi
 sed "s|@APP_DIR@|${APP_DIR}|g" "$APP_DIR/deploy/linux/routelix.service" > /etc/systemd/system/routelix.service
 sed "s|@APP_DIR@|${APP_DIR}|g" "$APP_DIR/deploy/linux/routelix-audio.service" > /etc/systemd/system/routelix-audio.service
 chmod 755 "$APP_DIR/deploy/linux/audio-daemon.sh" "$APP_DIR/deploy/linux/gv-login.sh" "$APP_DIR/deploy/linux/install.sh"
+
+install -d /etc/wireplumber/main.lua.d /etc/wireplumber/wireplumber.conf.d \
+  /etc/wireplumber/bluetooth.lua.d /etc/pipewire/pipewire.conf.d
+install -m 644 "$APP_DIR/deploy/linux/wireplumber/99-routelix-no-suspend.lua" \
+  /etc/wireplumber/main.lua.d/99-routelix-no-suspend.lua
+install -m 644 "$APP_DIR/deploy/linux/wireplumber/routelix-no-suspend.conf" \
+  /etc/wireplumber/wireplumber.conf.d/routelix-no-suspend.conf
+install -m 644 "$APP_DIR/deploy/linux/wireplumber/51-no-logind.lua" \
+  /etc/wireplumber/bluetooth.lua.d/51-no-logind.lua
+install -m 644 "$APP_DIR/deploy/linux/pipewire/routelix-sinks.conf" \
+  /etc/pipewire/pipewire.conf.d/routelix-sinks.conf
 
 systemctl daemon-reload
 systemctl enable routelix-audio.service routelix.service

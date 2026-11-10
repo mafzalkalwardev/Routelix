@@ -67,6 +67,69 @@ def test_linux_audio_route_uses_pactl():
     assert result.capture_hint == f"{SINK_FROM_GV}.monitor"
 
 
+def test_named_pulse_sink_does_not_use_portaudio_names(monkeypatch):
+    """sounddevice only lists pulse/default. The route test must still select the sink."""
+    import src.voice_playback as playback
+
+    monkeypatch.setattr(playback, "_pulse_sink_hint", lambda hint: hint.startswith("routelix_"))
+    with (
+        patch("src.linux_audio.ensure_null_sink", return_value=True) as ensure,
+        patch("src.linux_audio.probe_pulse_sink", return_value=(True, "Pulse sink routelix_to_gv accepted playback")),
+        patch("src.voice_playback.find_loopback_devices", side_effect=AssertionError("PortAudio lookup")),
+    ):
+        index = playback.find_playable_loopback_device("routelix_to_gv")
+    assert index == playback.PULSE_OUTPUT_INDEX
+    ensure.assert_called_once()
+    assert "routelix_to_gv" in playback.describe_audio_device(index)
+
+
+def test_pulse_playback_sets_pulse_sink_env(tmp_path, monkeypatch):
+    wav = tmp_path / "tone.wav"
+    import wave
+    with wave.open(str(wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x00\x10" * 160)
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env") or {}
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        return Result()
+
+    with (
+        patch("src.linux_audio.shutil.which", return_value="/usr/bin/paplay"),
+        patch("src.linux_audio.list_sinks", return_value=["routelix_to_gv"]),
+        patch("src.linux_audio.wake_sink"),
+        patch("src.linux_audio.subprocess.run", side_effect=fake_run),
+    ):
+        from src.linux_audio import play_wav_to_pulse_sink
+        play_wav_to_pulse_sink(wav, "routelix_to_gv")
+    assert seen["cmd"][0].endswith("paplay")
+    assert "--device=routelix_to_gv" in seen["cmd"]
+    assert seen["env"]["PULSE_SINK"] == "routelix_to_gv"
+
+
+def test_preflight_reports_suspended_sink(monkeypatch):
+    from src.preflight import check_audio_loopback
+
+    monkeypatch.setattr("src.linux_audio.pactl_available", lambda: True)
+    monkeypatch.setattr("src.linux_audio.ensure_null_sink", lambda name, description: True)
+    monkeypatch.setattr(
+        "src.linux_audio.probe_pulse_sink",
+        lambda sink, timeout_s=5.0: (False, "Playback to routelix_to_gv timed out because PipeWire suspended the idle sink."),
+    )
+    monkeypatch.setattr("src.preflight._linux_virtual_hint", lambda hint: True)
+    result = check_audio_loopback("routelix_to_gv")
+    assert result.status == "fail"
+    assert "suspended" in result.message
+
+
 def test_reserved_ports_are_refused(monkeypatch):
     monkeypatch.setenv("ROUTELIX_PORT", "9222")
     try:

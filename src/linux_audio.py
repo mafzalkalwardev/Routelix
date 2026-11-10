@@ -10,8 +10,10 @@ Windows VB-CABLE setup stays in ``src.audio_setup``.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
+import threading
 import wave
 from pathlib import Path
 from typing import Optional
@@ -23,6 +25,17 @@ SINK_FROM_GV = "routelix_from_gv"
 TTS_MONITOR = f"{SINK_TO_GV}.monitor"
 CAPTURE_MONITOR = f"{SINK_FROM_GV}.monitor"
 _LISTEN_TAG = "routelix_listen_in"
+_players: list[subprocess.Popen] = []
+_players_lock = threading.Lock()
+
+
+def stop_pulse_playback() -> None:
+    """Interrupt pacat/paplay started by this process."""
+    with _players_lock:
+        procs = list(_players)
+    for proc in procs:
+        if proc.poll() is None:
+            proc.terminate()
 
 
 def pactl_available() -> bool:
@@ -64,15 +77,97 @@ def list_modules() -> list[tuple[str, str]]:
     return rows
 
 
+# module-suspend-on-idle reads this node property. 0 means "do not suspend".
+# Space-separated. Commas are swallowed into device.description and never
+# become real node properties, so PipeWire keeps the sink suspended.
+_AWAKE_PROPS = (
+    "session.suspend-timeout-seconds=0 "
+    "node.always-process=true "
+    "node.passive=false "
+    "node.suspend-on-idle=false"
+)
+
+
+def sink_states() -> dict[str, str]:
+    """Map sink name to RUNNING, IDLE, or SUSPENDED."""
+    if not pactl_available():
+        return {}
+    proc = _pactl(["list", "short", "sinks"])
+    states: dict[str, str] = {}
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            state = parts[-1].strip().upper() if len(parts) >= 5 else ""
+            states[parts[1].strip()] = state
+    return states
+
+
+def sink_suspend_timeout(name: str) -> Optional[str]:
+    """Return the session.suspend-timeout-seconds property, if pactl printed it."""
+    if not pactl_available():
+        return None
+    proc = _pactl(["list", "sinks"])
+    current = ""
+    in_props = False
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            current = stripped.split(":", 1)[1].strip()
+            in_props = False
+        elif current == name and stripped == "Properties:":
+            in_props = True
+        elif current == name and in_props and stripped.startswith("session.suspend-timeout-seconds"):
+            return stripped.split("=", 1)[-1].strip().strip('"')
+        elif current == name and in_props and stripped and not line.startswith((" ", "\t")):
+            in_props = False
+    return None
+
+
+def _module_id_for_sink(name: str) -> Optional[str]:
+    for module_id, rest in list_modules():
+        if f"sink_name={name}" in rest.split():
+            return module_id
+        if f"sink_name={name}" in rest:
+            return module_id
+    return None
+
+
+def wake_sink(name: str) -> None:
+    """Resume a PipeWire node. A suspended null sink makes paplay and pacat block."""
+    if pactl_available():
+        _pactl(["suspend-sink", name, "0"])
+
+
+def _module_args_for_sink(name: str) -> str:
+    for _module_id, rest in list_modules():
+        if f"sink_name={name}" in rest:
+            return rest
+    return ""
+
+
 def ensure_null_sink(name: str, description: str) -> bool:
-    if name in list_sinks():
+    """Load the null sink, or reload it so PipeWire will not suspend it when idle."""
+    props = f"device.description={description},{_AWAKE_PROPS}"
+    exists = name in list_sinks()
+    module_args = _module_args_for_sink(name) if exists else ""
+    stays_awake = "session.suspend-timeout-seconds=0" in module_args or sink_suspend_timeout(name) == "0"
+    if exists and stays_awake:
+        wake_sink(name)
         return True
+    if exists:
+        module_id = _module_id_for_sink(name)
+        if module_id:
+            logger.info(
+                "Reloading Pulse sink %s so session.suspend-timeout-seconds=0",
+                name,
+            )
+            _pactl(["unload-module", module_id])
     proc = _pactl(
         [
             "load-module",
             "module-null-sink",
             f"sink_name={name}",
-            f"sink_properties=device.description={description}",
+            f"sink_properties={props}",
         ]
     )
     if proc.returncode != 0:
@@ -81,8 +176,66 @@ def ensure_null_sink(name: str, description: str) -> bool:
             name,
             (proc.stderr or proc.stdout or "").strip(),
         )
-        return False
+        return name in list_sinks()
+    wake_sink(name)
     return name in list_sinks() or proc.returncode == 0
+
+
+def _pulse_env(sink_name: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PULSE_SINK"] = sink_name
+    return env
+
+
+def probe_pulse_sink(sink_name: str, timeout_s: float = 5.0) -> tuple[bool, str]:
+    """Play a short silence buffer. Fails fast when PipeWire leaves the sink suspended."""
+    if not pactl_available():
+        return False, "pactl is not installed."
+    if sink_name not in list_sinks():
+        return False, f"Pulse sink {sink_name} is not loaded."
+    wake_sink(sink_name)
+    player = shutil.which("pacat") or shutil.which("paplay")
+    if not player:
+        return False, "Neither pacat nor paplay is installed (package pulseaudio-utils)."
+    silence = b"\x00\x00" * 1600  # 100 ms of s16le at 16 kHz
+    cmd = [
+        player,
+        f"--device={sink_name}",
+        "--playback",
+        "--format=s16le",
+        "--rate=16000",
+        "--channels=1",
+        "--latency-msec=30",
+    ]
+    # paplay reads a file, not raw stdin. pacat is the raw client.
+    if Path(player).name.startswith("paplay"):
+        return False, "pacat is required to probe the Pulse sink (pulseaudio-utils)."
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=silence,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+            env=_pulse_env(sink_name),
+        )
+    except subprocess.TimeoutExpired:
+        return False, _suspend_timeout_message(sink_name)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "pacat failed").strip()
+        return False, f"pacat could not open {sink_name}: {detail}"
+    state = sink_states().get(sink_name, "")
+    if state == "SUSPENDED":
+        return False, _suspend_timeout_message(sink_name)
+    return True, f"Pulse sink {sink_name} accepted playback (state {state or 'open'})."
+
+
+def _suspend_timeout_message(sink_name: str) -> str:
+    return (
+        f"Playback to {sink_name} timed out because PipeWire suspended the idle sink. "
+        "Install deploy/linux/wireplumber (session.suspend-timeout-seconds=0), "
+        "restart routelix-audio.service, and run this check again."
+    )
 
 
 def chromium_pulse_env() -> dict[str, str]:
@@ -153,8 +306,13 @@ def linux_speakers_muted() -> Optional[bool]:
 
 
 def play_wav_to_pulse_sink(wav_path: str | Path, sink_name: str) -> float:
-    """Play a WAV into a Pulse/PipeWire sink. Returns duration in seconds."""
-    paplay = shutil.which("paplay")
+    """Play a WAV into a Pulse/PipeWire sink by name. Returns duration in seconds.
+
+    PortAudio on this stack only exposes ``pulse`` and ``default``, so the named
+    null sink is selected with ``--device`` and ``PULSE_SINK`` rather than a
+    sounddevice index.
+    """
+    paplay = shutil.which("paplay") or shutil.which("pacat")
     if not paplay:
         raise RuntimeError(
             "paplay is not installed. Install pulseaudio-utils so TTS can reach Chromium."
@@ -168,21 +326,94 @@ def play_wav_to_pulse_sink(wav_path: str | Path, sink_name: str) -> float:
             duration = wf.getnframes() / float(rate)
     except wave.Error:
         duration = 0.0
-    proc = subprocess.run(
-        [paplay, f"--device={sink_name}", str(wav_path)],
-        capture_output=True,
-        text=True,
-        timeout=max(30, int(duration) + 15),
-        check=False,
-    )
+    if sink_name not in list_sinks():
+        ensure_null_sink(sink_name, sink_name)
+    wake_sink(sink_name)
+    cmd = [paplay, f"--device={sink_name}", str(wav_path)]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=max(8.0, duration + 8.0),
+            check=False,
+            env=_pulse_env(sink_name),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(_suspend_timeout_message(sink_name)) from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "paplay failed").strip()
         raise RuntimeError(
             f"paplay could not play to Pulse sink '{sink_name}': {detail}. "
             "Create the sinks with pactl (the live run does this automatically)."
         )
-    logger.info("TTS played %.2fs to Pulse sink %s", duration, sink_name)
+    logger.info("TTS played %.2fs to Pulse sink %s via PULSE_SINK", duration, sink_name)
     return duration
+
+
+def play_float32_to_pulse_sink(samples, samplerate: int, sink_name: str, stop_event=None) -> None:
+    """Stream float32 mono audio to a named sink with pacat."""
+    import numpy as np
+
+    pacat = shutil.which("pacat")
+    if not pacat:
+        raise RuntimeError("pacat is not installed. Install pulseaudio-utils.")
+    audio = np.asarray(samples, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = np.ascontiguousarray(audio, dtype="<f4")
+    if sink_name not in list_sinks():
+        ensure_null_sink(sink_name, sink_name)
+    wake_sink(sink_name)
+    proc = subprocess.Popen(
+        [
+            pacat,
+            f"--device={sink_name}",
+            "--playback",
+            "--format=float32le",
+            f"--rate={int(samplerate)}",
+            "--channels=1",
+            "--latency-msec=30",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=_pulse_env(sink_name),
+    )
+    with _players_lock:
+        _players.append(proc)
+    try:
+        assert proc.stdin is not None
+        raw = audio.tobytes()
+        chunk = max(int(samplerate) * 4, 4)
+        for start in range(0, len(raw), chunk):
+            if stop_event is not None and stop_event.is_set():
+                break
+            proc.stdin.write(raw[start:start + chunk])
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=max(8.0, (len(audio) / float(samplerate or 1)) + 8.0))
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(_suspend_timeout_message(sink_name)) from exc
+        stopped = stop_event is not None and stop_event.is_set()
+        if not stopped and proc.returncode not in (0, None):
+            err = (proc.stderr.read() if proc.stderr else b"") or b""
+            raise RuntimeError(
+                f"pacat exited {proc.returncode} for sink {sink_name}: {err.decode(errors='replace').strip()}"
+            )
+    except BrokenPipeError:
+        if stop_event is None or not stop_event.is_set():
+            raise
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        with _players_lock:
+            if proc in _players:
+                _players.remove(proc)
 
 
 def capture_pulse_monitor(source: str, samplerate: int, frame_size: int, stop_event, put_frame) -> None:
@@ -194,6 +425,8 @@ def capture_pulse_monitor(source: str, samplerate: int, frame_size: int, stop_ev
         raise RuntimeError(
             "parec is not installed. Install pulseaudio-utils so STT can hear the call."
         )
+    env = os.environ.copy()
+    env["PULSE_SOURCE"] = source
     proc = subprocess.Popen(
         [
             parec,
@@ -204,6 +437,7 @@ def capture_pulse_monitor(source: str, samplerate: int, frame_size: int, stop_ev
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     frame_bytes = int(frame_size) * 4
     try:

@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -286,7 +287,7 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
 
     def _build_system_prompt(self) -> str:
-        return build_dynamic_system_prompt(
+        prompt = build_dynamic_system_prompt(
             agent_name=self.agent_name,
             company_name=self.company_name,
             company_website=self.company_website,
@@ -295,6 +296,14 @@ class ConversationAgent:
             contact_name=self.contact_name,
             state=self.state,
         )
+        language = os.getenv("CALL_LANGUAGE", "en").strip().lower()[:2]
+        if language == "es":
+            prompt += (
+                "\n\nLANGUAGE: Speak only Spanish on this call. Match Mexico or Spain "
+                "if the contact's wording makes that clear. Do not switch to English "
+                "unless they ask. Keep each reply to one or two short spoken sentences."
+            )
+        return prompt
 
     def _complete(self) -> str:
         self._system = self._build_system_prompt()

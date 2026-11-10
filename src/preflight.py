@@ -102,7 +102,7 @@ def _linux_virtual_hint(hint: str) -> bool:
 def check_audio_loopback(device_hint: Optional[str] = None) -> CheckResult:
     hint = device_hint or os.getenv("LOOPBACK_DEVICE", "CABLE Input")
     if _linux_virtual_hint(hint):
-        from src.linux_audio import SINK_TO_GV, list_sinks, pactl_available
+        from src.linux_audio import SINK_TO_GV, ensure_null_sink, pactl_available, probe_pulse_sink
 
         if not pactl_available():
             return CheckResult(
@@ -110,16 +110,22 @@ def check_audio_loopback(device_hint: Optional[str] = None) -> CheckResult:
                 "fail",
                 "pactl is not installed. Install pulseaudio-utils for the Linux virtual audio route.",
             )
-        if SINK_TO_GV not in list_sinks():
+        sink = hint[:-len(".monitor")] if hint.lower().endswith(".monitor") else hint
+        if not sink.startswith("routelix_"):
+            sink = SINK_TO_GV
+        if not ensure_null_sink(sink, "Routelix_TTS_to_Google_Voice"):
             return CheckResult(
                 "Audio Loopback",
-                "warn",
-                f"Pulse sink {SINK_TO_GV} is not loaded yet. A live run creates it.",
+                "fail",
+                f"Could not load Pulse sink {sink}. Is routelix-audio.service running?",
             )
+        ok, detail = probe_pulse_sink(sink)
+        if not ok:
+            return CheckResult("Audio Loopback", "fail", detail)
         return CheckResult(
             "Audio Loopback",
             "ok",
-            f"Pulse sink {SINK_TO_GV} is ready for TTS into Chromium.",
+            detail + " PortAudio is not used; playback goes through pacat and PULSE_SINK.",
         )
     try:
         from src.voice_playback import find_loopback_devices, list_audio_devices, probe_output_device  # type: ignore
@@ -324,11 +330,34 @@ def check_auto_audio_route(loopback_device: Optional[str] = None) -> CheckResult
                 "fail",
                 "Linux audio route needs pactl (pulseaudio-utils) and PulseAudio or PipeWire.",
             )
+        from src.linux_audio import ensure_null_sink, probe_pulse_sink, sink_suspend_timeout
+
+        if not ensure_null_sink(SINK_TO_GV, "Routelix_TTS_to_Google_Voice"):
+            return CheckResult(
+                "Auto Audio Route",
+                "fail",
+                f"Could not load {SINK_TO_GV}. Start routelix-audio.service (PipeWire or PulseAudio).",
+            )
+        if not ensure_null_sink(SINK_FROM_GV, "Routelix_Google_Voice_Speaker"):
+            return CheckResult(
+                "Auto Audio Route",
+                "fail",
+                f"Could not load {SINK_FROM_GV}.",
+            )
+        timeout = sink_suspend_timeout(SINK_TO_GV)
+        ok, detail = probe_pulse_sink(SINK_TO_GV)
+        if not ok:
+            return CheckResult("Auto Audio Route", "fail", detail)
+        suspend_note = (
+            "session.suspend-timeout-seconds=0"
+            if timeout == "0"
+            else "suspend timeout was not reported as 0; playback was still resumed with pactl suspend-sink"
+        )
         return CheckResult(
             "Auto Audio Route",
             "ok",
-            f"Linux route: TTS → {SINK_TO_GV}, Chromium speaker → {SINK_FROM_GV}, "
-            f"STT ← {SINK_FROM_GV}.monitor. Sinks are created before a live run.",
+            f"Linux route: TTS → {SINK_TO_GV} ({suspend_note}), Chromium speaker → {SINK_FROM_GV}, "
+            f"STT ← {SINK_FROM_GV}.monitor. {detail}",
         )
     try:
         from src.audio_setup import find_endpoint, find_speaker_endpoint, paired_or_cable

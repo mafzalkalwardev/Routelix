@@ -19,6 +19,13 @@ from typing import Optional
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
+# PortAudio on PipeWire only lists "pulse" and "default", never the null-sink
+# name. This sentinel means "play with pacat/paplay and PULSE_SINK", not a
+# sounddevice index. It is intentionally outside the PortAudio index range.
+PULSE_OUTPUT_INDEX = -1001
+_pulse_sink_name = ""
+_pulse_failure = ""
+
 
 def list_audio_devices() -> list[dict]:
     """Return all audio devices visible to sounddevice."""
@@ -42,6 +49,9 @@ def list_audio_devices() -> list[dict]:
 
 def describe_audio_device(device_index: int) -> str:
     """Return a stable human-readable PortAudio device description."""
+    if device_index == PULSE_OUTPUT_INDEX:
+        name = _pulse_sink_name or "routelix_to_gv"
+        return f"[pulse] {name} (PULSE_SINK, not a PortAudio device name)"
     try:
         import sounddevice as sd
 
@@ -144,6 +154,10 @@ def probe_output_device(device_index: int, duration_s: float = 0.03) -> tuple[bo
     Open an output stream and write a tiny silent buffer.
     This catches "device unavailable" before the app starts dialing.
     """
+    if device_index == PULSE_OUTPUT_INDEX:
+        from src.linux_audio import probe_pulse_sink
+
+        return probe_pulse_sink(_pulse_sink_name or "routelix_to_gv")
     try:
         import numpy as np
         import sounddevice as sd
@@ -165,8 +179,45 @@ def probe_output_device(device_index: int, duration_s: float = 0.03) -> tuple[bo
         return False, str(exc)
 
 
+def pulse_failure_detail() -> str:
+    return _pulse_failure
+
+
 def find_playable_loopback_device(name_hint: str = "CABLE Input") -> Optional[int]:
-    """Return the first matching output device that can actually be opened."""
+    """Return the first matching output device that can actually be opened.
+
+    On Linux, a ``routelix_*`` hint is a Pulse/PipeWire sink name. sounddevice
+    cannot see that name (it lists ``pulse`` and ``default``), so the returned
+    index is ``PULSE_OUTPUT_INDEX`` and playback uses pacat/paplay.
+    """
+    global _pulse_sink_name, _pulse_failure
+    if _pulse_sink_hint(name_hint):
+        from src.linux_audio import SINK_TO_GV, ensure_null_sink, probe_pulse_sink
+
+        sink = (name_hint or "").strip()
+        if sink.endswith(".monitor"):
+            sink = sink[: -len(".monitor")]
+        if not sink:
+            sink = SINK_TO_GV
+        description = (
+            "Routelix_TTS_to_Google_Voice"
+            if sink == SINK_TO_GV
+            else "Routelix_Google_Voice_Speaker"
+        )
+        if not ensure_null_sink(sink, description):
+            _pulse_failure = f"Pulse sink {sink} could not be created with pactl."
+            logger.warning(_pulse_failure)
+            return None
+        ok, detail = probe_pulse_sink(sink)
+        _pulse_sink_name = sink
+        if not ok:
+            _pulse_failure = detail
+            logger.warning("Pulse sink %s is not playable: %s", sink, detail)
+            return None
+        _pulse_failure = ""
+        logger.info("Selected Pulse sink for LOOPBACK_DEVICE='%s': %s", name_hint, detail)
+        return PULSE_OUTPUT_INDEX
+
     for device_index in find_loopback_devices(name_hint):
         ok, detail = probe_output_device(device_index)
         if ok:
@@ -268,6 +319,16 @@ def _stream_audio_to_device(
     stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Write numpy-compatible audio to an explicit sounddevice OutputStream."""
+    if device_index == PULSE_OUTPUT_INDEX:
+        from src.linux_audio import play_float32_to_pulse_sink
+
+        play_float32_to_pulse_sink(
+            data,
+            int(samplerate),
+            _pulse_sink_name or "routelix_to_gv",
+            stop_event=stop_event,
+        )
+        return
     import sounddevice as sd
 
     target_rate = _device_default_samplerate(sd, device_index, int(samplerate))
@@ -322,12 +383,16 @@ def play_wav_to_device(
     Play a WAV file to a specific output device by index.
     Returns playback duration in seconds.
     """
-    import sounddevice as sd
-    import soundfile as sf
-
     wav_path = Path(wav_path)
     if not wav_path.exists():
         raise FileNotFoundError(f"Audio file not found: {wav_path}")
+    if device_index == PULSE_OUTPUT_INDEX:
+        from src.linux_audio import play_wav_to_pulse_sink
+
+        return play_wav_to_pulse_sink(wav_path, _pulse_sink_name or "routelix_to_gv")
+
+    import sounddevice as sd
+    import soundfile as sf
 
     data, samplerate = sf.read(str(wav_path), dtype="float32")
     duration = len(data) / samplerate

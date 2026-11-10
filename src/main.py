@@ -193,7 +193,11 @@ def _run_audio_route_test(args: argparse.Namespace, cfg: Config) -> int:
 
     device_index = find_playable_loopback_device(loopback_device)
     if device_index is None:
-        print(f"[FAIL] No playable loopback output device found for '{loopback_device}'.")
+        from src.voice_playback import pulse_failure_detail
+
+        detail = pulse_failure_detail()
+        extra = f" {detail}" if detail else ""
+        print(f"[FAIL] No playable loopback output device found for '{loopback_device}'.{extra}")
         return 1
 
     try:
@@ -1810,21 +1814,13 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
-    # Settings-page accounts are the source of truth for live worker slots.
-    # Each enabled account owns a persistent Chrome profile and isolated audio route.
+    # One Google Voice login is one phone line. Saved extra accounts are not
+    # extra simultaneous calls. ensure_logged_in reuses that single session.
+    from src.capacity import google_voice_concurrent_calls
     from src.gv_accounts import load_accounts
     enabled_accounts = [row for row in load_accounts(include_password=True) if row.get("enabled")]
     account_by_profile = {str(row["profile_name"]).casefold(): row for row in enabled_accounts}
-    account_parallel_profiles = [
-        {
-            "profile_name": row["profile_name"],
-            "loopback_device": row["loopback_device"],
-            "capture_device": row["capture_device"],
-            "account_id": row["id"],
-            "account_email": row["email"],
-        }
-        for row in enabled_accounts
-    ]
+    account_parallel_profiles = []
     if enabled_accounts:
         first_account = enabled_accounts[0]
         profile_name = first_account["profile_name"]
@@ -1849,7 +1845,16 @@ def main() -> None:
 
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    requested_slots = len(enabled_accounts) if enabled_accounts else int(cfg.n_slots)
+    requested_slots = google_voice_concurrent_calls()
+    if len(enabled_accounts) > 1 or int(cfg.n_slots) > 1:
+        logger.info(
+            "Google Voice allows %d live call on this number. "
+            "n_slots=%d and saved accounts=%d do not add lines. "
+            "See src/capacity.py for how many agents fit in RAM if more numbers existed.",
+            requested_slots,
+            int(cfg.n_slots),
+            len(enabled_accounts),
+        )
     parallel_requested = requested_slots > 1
     if not loopback_available and not parallel_requested:
         logger.warning(
@@ -1858,6 +1863,17 @@ def main() -> None:
             loopback_device,
         )
     if not args.dry_run and not loopback_available and not parallel_requested:
+        if sys.platform.startswith("linux"):
+            from src.voice_playback import pulse_failure_detail
+
+            detail = pulse_failure_detail()
+            extra = f" {detail}" if detail else ""
+            raise SystemExit(
+                "Live calling needs the Pulse sink "
+                f"'{loopback_device}' (pacat/paplay, not a PortAudio device name). "
+                "Start routelix-audio.service and run: python -m src.main --audio-route-test."
+                + extra
+            )
         raise SystemExit(
             "Live calling needs an output loopback device so TTS reaches Google Voice. "
             "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "

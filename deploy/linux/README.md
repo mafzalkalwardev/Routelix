@@ -99,6 +99,26 @@ Google often rejects imported session cookies. If the dial pad does not appear, 
 
 ## 6. Call audio
 
+`sounddevice` only lists `pulse` and `default` on this stack, so TTS does not look up `routelix_to_gv` as a PortAudio device. It plays with `paplay`/`pacat --device=routelix_to_gv` and `PULSE_SINK`. Speech-to-text records with `parec` and `PULSE_SOURCE=routelix_from_gv.monitor`.
+
+Two PipeWire issues block that playback until the deploy files are installed:
+
+- A system service has no interactive logind seat. WirePlumber's default `with-logind=true` makes it disconnect, the null sink stays `SUSPENDED`, and `paplay` waits forever. `bluetooth.lua.d/51-no-logind.lua` turns that off.
+- Idle sinks are suspended after a few seconds. The null sinks are created with `session.suspend-timeout-seconds=0` (space-separated `sink_properties`; commas are ignored). WirePlumber 0.4 and 0.5 drop-ins repeat that rule.
+
+`routelix-audio.service` starts PipeWire, WirePlumber, and pipewire-pulse, then loads the sinks.
+
+After pulling this update on a box that already ran the audio service:
+
+```bash
+sudo bash deploy/linux/install.sh
+sudo systemctl restart routelix-audio routelix
+sudo -u routelix env XDG_RUNTIME_DIR=/run/routelix PULSE_SERVER=unix:/run/routelix/pulse/native \
+  /opt/routelix/.venv/bin/python -m src.main --audio-route-test
+```
+
+Preflight fails if a short `pacat` write to `routelix_to_gv` times out, which is the suspended-sink failure.
+
 Before the first live run the process creates two null sinks:
 
 - `routelix_to_gv` — Piper/Kokoro/Edge playback. Chromium's microphone is `routelix_to_gv.monitor`.

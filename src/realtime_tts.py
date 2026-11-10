@@ -176,6 +176,12 @@ class RealtimeTTS:
     def stop(self) -> None:
         """Stop any in-progress playback immediately."""
         try:
+            from src.linux_audio import stop_pulse_playback
+
+            stop_pulse_playback()
+        except Exception:
+            pass
+        try:
             import sounddevice as sd
             sd.stop()
         except Exception:
