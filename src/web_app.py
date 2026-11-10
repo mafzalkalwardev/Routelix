@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from urllib.parse import quote as _url_quote
+from urllib.parse import parse_qs, quote as _url_quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -31,6 +31,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -71,6 +72,177 @@ _account_connect_lock = threading.Lock()
 # Custom Jinja2 filters
 templates.env.filters["basename"] = lambda p: Path(str(p or "")).name
 templates.env.filters["url_encode"] = lambda v: _url_quote(str(v or ""), safe="")
+
+
+def _jinja_csrf(request: Request) -> str:
+    try:
+        return str(request.session.get("csrf") or "")
+    except Exception:
+        return ""
+
+
+def _jinja_user(request: Request):
+    return getattr(getattr(request, "state", None), "user", None)
+
+
+templates.env.globals["csrf_token"] = _jinja_csrf
+templates.env.globals["current_user"] = _jinja_user
+
+
+def _normalize_path(path: str) -> str:
+    if path != "/" and path.endswith("/"):
+        return path.rstrip("/") or "/"
+    return path or "/"
+
+
+_PUBLIC_GET = {
+    "/",
+    "/login",
+    "/healthz",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/llms.txt",
+    "/llms-full.txt",
+    "/favicon.ico",
+    "/site.webmanifest",
+    "/manifest.webmanifest",
+}
+
+
+def _is_public(path: str, method: str) -> bool:
+    path = _normalize_path(path)
+    if method in {"GET", "HEAD"} and (path in _PUBLIC_GET or path.startswith("/static/")):
+        return True
+    return method == "POST" and path in {"/login", "/setup"}
+
+
+def _csrf_valid(request: Request, body: bytes) -> bool:
+    from src.auth import tokens_match
+
+    expected = str(request.session.get("csrf") or "")
+    header = request.headers.get("x-csrf-token", "")
+    if tokens_match(expected, header):
+        return True
+    ctype = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in ctype:
+        parsed = parse_qs(body.decode("utf-8", errors="ignore"), keep_blank_values=True)
+        token = (parsed.get("csrf_token") or [""])[0]
+        return tokens_match(expected, token)
+    return False
+
+
+class AuthGateMiddleware:
+    """Require a session for the operator UI and reject cross-site posts."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        path = _normalize_path(scope.get("path") or "/")
+        method = scope.get("method", "GET").upper()
+        from src.auth import public_user
+
+        username = ""
+        try:
+            username = str(request.session.get("user") or "")
+        except Exception:
+            username = ""
+        user = public_user(username) if username else None
+        if user:
+            request.state.user = user
+        if _is_public(path, method):
+            await self.app(scope, receive, send)
+            return
+        if not user:
+            if path.startswith("/api") or "application/json" in request.headers.get("accept", ""):
+                response = JSONResponse({"detail": "Authentication required"}, status_code=401)
+            else:
+                nxt = _url_quote(scope.get("path") or "/dashboard", safe="")
+                response = RedirectResponse(url=f"/login?next={nxt}", status_code=303)
+            await response(scope, receive, send)
+            return
+        if method in {"POST", "PUT", "PATCH", "DELETE"}:
+            body = await request.body()
+            if not _csrf_valid(request, body):
+                response = JSONResponse({"detail": "CSRF check failed"}, status_code=403)
+                await response(scope, receive, send)
+                return
+
+            async def replay():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            await self.app(scope, replay, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapped(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {key.lower() for key, _value in headers}
+
+                def add(name: str, value: str) -> None:
+                    if name.lower().encode() not in existing:
+                        headers.append((name.encode(), value.encode()))
+
+                add("X-Content-Type-Options", "nosniff")
+                add("Referrer-Policy", "strict-origin-when-cross-origin")
+                add("X-Frame-Options", "DENY")
+                add("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+                add(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'self'; "
+                    "frame-ancestors 'none'",
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapped)
+
+
+def _session_secret() -> str:
+    key = os.getenv("ROUTELIX_SECRET_KEY", "").strip()
+    if len(key) >= 16:
+        return key
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(
+            "Set ROUTELIX_SECRET_KEY to a long random string before starting Routelix in server mode."
+        )
+    return "routelix-dev-only-secret-change-me"
+
+
+def _cookie_secure() -> bool:
+    from src.auth import cookie_secure
+
+    return cookie_secure()
+
+
+from starlette.middleware.sessions import SessionMiddleware
+
+app.add_middleware(AuthGateMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret(),
+    session_cookie="routelix_session",
+    max_age=60 * 60 * 12,
+    same_site="lax",
+    https_only=_cookie_secure(),
+)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +579,10 @@ def _build_run_args(
     dry_run: bool,
     headless: bool = True,
 ) -> List[str]:
+    from src.linux_audio import map_windows_audio_name
+
+    loopback = map_windows_audio_name(loopback, kind="loopback")
+    capture = map_windows_audio_name(capture, kind="capture")
     args = [
         "--contacts", contacts,
         "--profile", profile,
@@ -426,15 +602,643 @@ def _build_run_args(
 # Page routes
 # ---------------------------------------------------------------------------
 
+def _login_context(request: Request, *, error: str = "", next_url: str = "/dashboard") -> dict:
+    from src.auth import client_ip, safe_next, setup_allowed, too_many_attempts, users_exist
+
+    return {
+        "error": error,
+        "setup_mode": setup_allowed(request),
+        "has_users": users_exist(),
+        "locked": too_many_attempts(client_ip(request)),
+        "next_url": safe_next(next_url),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
+async def marketing_home(request: Request):
+    if getattr(request.state, "user", None):
+        return RedirectResponse("/dashboard", status_code=303)
+    from src.public_site import landing_context
+
+    return templates.TemplateResponse(request, "landing.html", landing_context())
+
+
+@app.get("/scripts", response_class=HTMLResponse)
+async def scripts_page(request: Request):
+    return templates.TemplateResponse(request, "scripts.html", {})
+
+
+@app.get("/voices", response_class=HTMLResponse)
+async def voices_page(request: Request):
+    from src.voice_catalog import CATALOG, rtf_label
+
+    rows = [
+        {
+            "engine": item.engine,
+            "language": item.language,
+            "voice_id": item.voice_id,
+            "label": item.label,
+            "rtf": rtf_label(item.engine),
+        }
+        for item in CATALOG
+    ]
+    return templates.TemplateResponse(request, "voices.html", {"voices": rows})
+
+
+@app.get("/api/scripts")
+async def api_scripts():
+    from src.script_engine import active_script_id, load_scripts
+
+    return {
+        "ok": True,
+        "active_script_id": active_script_id(),
+        "scripts": [item.to_dict() for item in load_scripts()],
+    }
+
+
+@app.post("/api/scripts")
+async def api_save_script(request: Request):
+    from src.script_engine import CallScript, save_script
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    try:
+        save_script(script, use_on_calls=bool(body.get("use_on_calls")))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "script_id": script.script_id}
+
+
+@app.post("/api/scripts/test")
+async def api_test_script(request: Request):
+    import base64
+    from src.script_engine import CallScript, ScriptSession, record_turn
+    from src.voice_preview import synthesize_preview
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    session = ScriptSession(
+        script,
+        {
+            "first_name": str(body.get("first_name") or "Sam"),
+            "company": str(body.get("company") or script.name),
+            "product": str(body.get("product") or script.product),
+            "agent_name": str(body.get("agent_name") or "Alex"),
+        },
+    )
+    turn = session.hear(str(body.get("prospect") or ""))
+    record_turn(script.script_id, turn)
+    from src.voice_catalog import engine_of_voice
+
+    audio, note = synthesize_preview(
+        turn.line,
+        engine_of_voice(script.voice_id),
+        script.voice_id,
+        script.speed,
+        script.pitch,
+    )
+    encoded = base64.b64encode(audio).decode("ascii") if audio else ""
+    return {
+        "ok": True,
+        "state": turn.state,
+        "line": turn.line,
+        "ended": turn.ended,
+        "note": note,
+        "audio": f"data:audio/wav;base64,{encoded}" if encoded else "",
+    }
+
+
+@app.post("/api/scripts/transcribe")
+async def api_transcribe_prospect(request: Request):
+    """Turn a short browser recording into the prospect line. Nothing is dialed."""
+    import tempfile
+    from pathlib import Path
+
+    payload = await request.body()
+    if len(payload) < 200:
+        return {"ok": False, "text": "", "detail": "The recording was empty."}
+    with tempfile.TemporaryDirectory() as folder:
+        source = Path(folder) / "in.bin"
+        wav = Path(folder) / "in.wav"
+        source.write_bytes(payload)
+        import subprocess
+
+        done = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(source), "-ac", "1", "-ar", "16000", str(wav)],
+            capture_output=True,
+            timeout=20,
+        )
+        if done.returncode != 0 or not wav.is_file():
+            return {"ok": False, "text": "", "detail": "Could not read that recording."}
+        import numpy as np
+        import wave
+
+        with wave.open(str(wav), "rb") as handle:
+            frames = handle.readframes(handle.getnframes())
+            rate = handle.getframerate()
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    from src.stt import LocalWhisperSTT
+    import os
+
+    try:
+        text = LocalWhisperSTT(
+            model_size=os.getenv("STT_LOCAL_MODEL", "tiny"),
+            model_dir=os.getenv("STT_MODEL_DIR", "models/stt"),
+        ).transcribe(audio, samplerate=rate)
+    except Exception as exc:
+        return {"ok": False, "text": "", "detail": f"Speech-to-text is not ready: {exc}"}
+    return {"ok": True, "text": text}
+
+
+@app.post("/api/scripts/evaluate")
+async def api_eval_script(request: Request):
+    from src.script_engine import CallScript, evaluate_script
+
+    body = await request.json()
+    script = CallScript.from_dict(body)
+    result = evaluate_script(
+        script,
+        {
+            "first_name": str(body.get("first_name") or "Sam"),
+            "company": str(body.get("company") or "INDUS Web Agency"),
+            "product": str(body.get("product") or script.product),
+            "agent_name": str(body.get("agent_name") or "Alex"),
+        },
+    )
+    return {"ok": True, **result}
+
+
+@app.get("/api/scripts/{script_id}/analytics")
+async def api_script_analytics(script_id: str):
+    from src.script_engine import analytics_for
+
+    return {"ok": True, "analytics": analytics_for(script_id)}
+
+
+@app.get("/api/voices")
+async def api_voices():
+    from src.voice_catalog import CATALOG, rtf_label
+
+    return {
+        "ok": True,
+        "voices": [
+            {
+                "engine": item.engine,
+                "language": item.language,
+                "voice_id": item.voice_id,
+                "label": item.label,
+                "rtf": rtf_label(item.engine),
+            }
+            for item in CATALOG
+        ],
+    }
+
+
+@app.post("/api/voices/preview")
+async def api_voice_preview(request: Request):
+    import base64
+    from src.voice_preview import synthesize_preview
+
+    body = await request.json()
+    audio, note = synthesize_preview(
+        str(body.get("text") or ""),
+        str(body.get("engine") or "espeak"),
+        str(body.get("voice") or ""),
+        float(body.get("speed") or 1.0),
+        float(body.get("pitch") or 0.0),
+    )
+    encoded = base64.b64encode(audio).decode("ascii")
+    return {"ok": True, "note": note, "audio": f"data:audio/wav;base64,{encoded}"}
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     logs = _read_call_logs(limit=10)
     state = run_manager.get_state()
+    from src.agent_fleet import FLEET
+    from src.capacity import capacity_report, component_budget
+
     return templates.TemplateResponse(request, "index.html", {
         "recent_logs": logs,
         "run_state": state,
         "log_stats": _call_log_stats(),
+        "capacity_report": capacity_report(),
+        "capacity": component_budget(),
+        "fleet": FLEET.snapshot(),
     })
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/dashboard"):
+    from src.auth import ensure_bootstrap_admin, safe_next
+
+    ensure_bootstrap_admin()
+    if getattr(request.state, "user", None):
+        return RedirectResponse(safe_next(next), status_code=303)
+    return templates.TemplateResponse(request, "login.html", _login_context(request, next_url=next))
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    next: str = Form("/dashboard"),
+):
+    from src.auth import (
+        authenticate,
+        clear_failures,
+        client_ip,
+        cookie_secure,
+        ensure_bootstrap_admin,
+        new_csrf_token,
+        record_failure,
+        safe_next,
+        too_many_attempts,
+    )
+
+    ip = client_ip(request)
+    if too_many_attempts(ip):
+        return templates.TemplateResponse(
+            request, "login.html", _login_context(request, next_url=next), status_code=429
+        )
+    ensure_bootstrap_admin()
+    user = authenticate(username, password)
+    if not user:
+        record_failure(ip)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            _login_context(request, error="Those credentials were not accepted.", next_url=next),
+            status_code=401,
+        )
+    clear_failures(ip)
+    token = new_csrf_token()
+    request.session["user"] = user["username"]
+    request.session["csrf"] = token
+    response = RedirectResponse(safe_next(next), status_code=303)
+    response.set_cookie(
+        "routelix_csrf",
+        token,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure(),
+        max_age=12 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.post("/setup")
+async def setup_admin(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+):
+    from src.auth import (
+        cookie_secure,
+        create_user,
+        new_csrf_token,
+        setup_allowed,
+    )
+
+    if not setup_allowed(request):
+        raise HTTPException(status_code=403, detail="First-run setup is not available on this connection")
+    try:
+        user = create_user(username, password, role="admin")
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            _login_context(request, error=str(exc)),
+            status_code=400,
+        )
+    token = new_csrf_token()
+    request.session["user"] = user["username"]
+    request.session["csrf"] = token
+    response = RedirectResponse("/admin/users", status_code=303)
+    response.set_cookie(
+        "routelix_csrf",
+        token,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure(),
+        max_age=12 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie("routelix_csrf", path="/")
+    return response
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_page(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from src.auth import list_public_users
+
+    return templates.TemplateResponse(
+        request,
+        "admin_users.html",
+        {"users": list_public_users(), "error": "", "created": ""},
+    )
+
+
+@app.post("/admin/users", response_class=HTMLResponse)
+async def admin_users_create(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    role: str = Form("operator"),
+):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from src.auth import create_user, list_public_users
+
+    error = ""
+    created = ""
+    try:
+        created_user = create_user(username, password, role=role)
+        created = created_user["username"]
+    except ValueError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "admin_users.html",
+        {"users": list_public_users(), "error": error, "created": created},
+    )
+
+
+def _require_admin(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user
+
+
+@app.get("/admin/crm", response_class=HTMLResponse)
+async def admin_crm_page(request: Request):
+    _require_admin(request)
+    from src.auth import ensure_ashley, list_public_users
+
+    ensure_ashley()
+    from src.lead_crm import list_leads, user_stats
+    from src.script_engine import load_scripts
+
+    users = list_public_users()
+    stats_by = {user["username"]: user_stats(user["username"]) for user in users}
+    return templates.TemplateResponse(request, "admin_crm.html", {
+        "users": users,
+        "stats_by": stats_by,
+        "leads": list_leads(include_all=True),
+        "scripts": [item.to_dict() for item in load_scripts()],
+        "error": "",
+    })
+
+
+@app.post("/admin/crm/users")
+async def admin_crm_create_user(request: Request):
+    _require_admin(request)
+    from src.auth import create_user
+
+    body = await request.json()
+    try:
+        created = create_user(
+            str(body.get("username") or ""),
+            str(body.get("password") or ""),
+            role=str(body.get("role") or "agent"),
+            status=str(body.get("status") or "pending"),
+            script_id=str(body.get("script_id") or ""),
+            lead_list=str(body.get("lead_list") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "user": created}
+
+
+@app.post("/admin/crm/users/{username}")
+async def admin_crm_update_user(username: str, request: Request):
+    _require_admin(request)
+    from src.auth import update_user
+
+    body = await request.json()
+    try:
+        updated = update_user(
+            username,
+            **{key: body[key] for key in ("status", "script_id", "lead_list", "role") if key in body},
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "user": updated}
+
+
+@app.post("/admin/crm/leads/import")
+async def admin_crm_import_leads(request: Request):
+    _require_admin(request)
+    from src.lead_crm import import_csv
+
+    body = await request.json()
+    try:
+        added = import_csv(
+            str(body.get("csv") or ""),
+            owner=str(body.get("owner") or ""),
+            list_name=str(body.get("list_name") or ""),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "added": added}
+
+
+@app.post("/admin/crm/leads/assign")
+async def admin_crm_assign_list(request: Request):
+    _require_admin(request)
+    from src.auth import update_user
+    from src.lead_crm import assign_list
+
+    body = await request.json()
+    try:
+        changed = assign_list(str(body.get("list_name") or ""), str(body.get("owner") or ""))
+        update_user(str(body.get("owner") or ""), lead_list=str(body.get("list_name") or ""))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "updated": changed}
+
+
+@app.get("/admin/lines", response_class=HTMLResponse)
+async def admin_lines_page(request: Request):
+    _require_admin(request)
+    from src.auth import list_public_users
+    from src.capacity import configured_line_count, sustainable_lines
+    from src.gv_lines import capacity_warning, line_plan
+
+    count = configured_line_count()
+    return templates.TemplateResponse(request, "lines.html", {
+        "lines": line_plan(count),
+        "count": count,
+        "sustainable": sustainable_lines(),
+        "warning": capacity_warning(count),
+        "users": list_public_users(),
+    })
+
+
+@app.post("/admin/lines")
+async def admin_lines_set(request: Request):
+    _require_admin(request)
+    from src.gv_lines import capacity_warning, set_line_count
+
+    body = await request.json()
+    try:
+        count = int(body.get("lines"))
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Enter a line count"})
+    if count < 1 or count > 7:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Lines must be from 1 to 7"})
+    count = set_line_count(count)
+    from src.gv_lines import ensure_line_profiles
+
+    ensure_line_profiles(count)
+    return {"ok": True, "lines": count, "warning": capacity_warning(count)}
+
+
+@app.post("/admin/lines/{index}/clone")
+async def admin_line_clone(index: int, request: Request):
+    _require_admin(request)
+    from src.gv_lines import reclone_profile
+
+    try:
+        name = reclone_profile(index)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "profile": name}
+
+
+@app.post("/admin/lines/{index}/signin")
+async def admin_line_signin(index: int, request: Request):
+    _require_admin(request)
+    from src.gv_lines import open_signin
+
+    try:
+        opened = open_signin(index)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, **opened}
+
+
+@app.get("/my", response_class=HTMLResponse)
+async def my_work_page(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from src.lead_crm import list_leads, user_stats
+
+    owner = "" if user.get("role") == "admin" else user["username"]
+    leads = list_leads(owner=user["username"], include_all=user.get("role") == "admin")
+    return templates.TemplateResponse(request, "my_work.html", {
+        "leads": leads,
+        "stats": user_stats("" if user.get("role") == "admin" else user["username"]),
+        "can_dial": str(user.get("status") or "active") == "active",
+        "owner_filter": owner,
+    })
+
+
+@app.post("/my/leads/{lead_id}")
+async def my_update_lead(lead_id: str, request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    from src.lead_crm import update_lead
+
+    body = await request.json()
+    fields = {key: body[key] for key in ("status", "notes", "follow_up") if key in body}
+    try:
+        updated = update_lead(
+            lead_id,
+            actor=user["username"],
+            is_admin=user.get("role") == "admin",
+            **fields,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "lead": updated}
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/robots.txt")
+async def robots_txt():
+    from src.public_site import robots_txt as build_robots
+
+    return Response(build_robots(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    from src.public_site import sitemap_xml as build_sitemap
+
+    return Response(build_sitemap(), media_type="application/xml")
+
+
+@app.get("/llms.txt")
+async def llms_txt():
+    from src.public_site import llms_txt as build_llms
+
+    return Response(build_llms(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/llms-full.txt")
+async def llms_full_txt():
+    from src.public_site import llms_full_txt as build_llms
+
+    return Response(build_llms(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/site.webmanifest")
+@app.get("/manifest.webmanifest")
+async def web_manifest():
+    from src.public_site import DESCRIPTION
+
+    payload = {
+        "name": "Routelix",
+        "short_name": "Routelix",
+        "description": DESCRIPTION,
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#0C2340",
+        "theme_color": "#0C2340",
+        "icons": [
+            {"src": "/static/landing/favicon-32.png", "sizes": "32x32", "type": "image/png"},
+            {"src": "/static/landing/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
+            {
+                "src": "/static/routelix-mark.svg",
+                "sizes": "any",
+                "type": "image/svg+xml",
+                "purpose": "any",
+            },
+        ],
+    }
+    return JSONResponse(payload, media_type="application/manifest+json")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    icon = STATIC_DIR / "landing" / "favicon.ico"
+    if not icon.is_file():
+        icon = STATIC_DIR / "routelix-mark.svg"
+    return FileResponse(icon)
 
 
 @app.get("/preflight", response_class=HTMLResponse)
@@ -763,8 +1567,27 @@ async def api_save_settings(request: Request):
             allowed["parallel_profiles"] = parsed
         except (json.JSONDecodeError, ValueError) as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    allowed["n_slots"] = 1
+    allowed["max_concurrent_dials"] = 1
+    allowed["parallel_profiles"] = []
+    allowed["force_requested_slots"] = False
     _save_config(allowed)
     return {"ok": True, "saved": list(allowed.keys())}
+
+
+@app.get("/api/fleet")
+async def api_fleet():
+    from src.agent_fleet import FLEET
+    from src.capacity import capacity_report, component_budget
+
+    snap = FLEET.snapshot()
+    budget = component_budget()
+    return {
+        "ok": True,
+        "report": capacity_report(),
+        "budget": budget,
+        "fleet": snap,
+    }
 
 
 @app.get("/api/gv-accounts")
@@ -783,6 +1606,13 @@ async def api_gv_accounts():
 async def api_save_gv_account(request: Request):
     from src.gv_accounts import save_account
     body = await request.json()
+    if not str(body.get("name") or "").strip():
+        body["name"] = "Main line"
+    if not str(body.get("loopback_device") or "").strip():
+        from src.linux_audio import CAPTURE_MONITOR, SINK_TO_GV
+
+        body["loopback_device"] = SINK_TO_GV
+        body["capture_device"] = body.get("capture_device") or CAPTURE_MONITOR
     try:
         account = save_account(body)
     except (ValueError, OSError) as exc:
@@ -932,6 +1762,11 @@ async def api_audio_test_capture(request: Request):
 
 @app.post("/api/run/start")
 async def api_run_start(request: Request):
+    user = getattr(request.state, "user", None)
+    from src.auth import can_dial
+
+    if not can_dial(user):
+        raise HTTPException(status_code=403, detail="Only an active user can start dialing")
     body = await request.json()
     cfg = _load_config()
 
@@ -969,6 +1804,11 @@ async def api_run_start(request: Request):
 
 @app.post("/api/run/single-call")
 async def api_run_single_call(request: Request):
+    user = getattr(request.state, "user", None)
+    from src.auth import can_dial
+
+    if not can_dial(user):
+        raise HTTPException(status_code=403, detail="Only an active user can start dialing")
     body = await request.json()
     cfg = _load_config()
 
@@ -1378,8 +2218,15 @@ async def api_get_transcript(filename: str):
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+RESERVED_PORTS = {1080, 5001, 9222, 12525, 27017}
+
+
+def _server_host() -> str:
+    return os.environ.get("ROUTELIX_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+
 def _server_port(default: int = 8000) -> int:
-    raw_port = os.environ.get("INDUS_CONSOLE_PORT")
+    raw_port = os.environ.get("ROUTELIX_PORT") or os.environ.get("INDUS_CONSOLE_PORT")
     for idx, arg in enumerate(sys.argv[1:]):
         if arg == "--port" and idx + 2 <= len(sys.argv[1:]):
             raw_port = sys.argv[idx + 2]
@@ -1394,28 +2241,62 @@ def _server_port(default: int = 8000) -> int:
         raise SystemExit(f"Invalid console port: {raw_port}") from exc
     if port < 1 or port > 65535:
         raise SystemExit(f"Console port out of range: {port}")
+    if port in RESERVED_PORTS:
+        raise SystemExit(
+            f"Port {port} is already used by another service on this host. "
+            "Set ROUTELIX_PORT to a free port (8787 is the Linux default)."
+        )
     return port
 
 
 @app.on_event("startup")
 async def _web_startup() -> None:
     logger.info("INDUS web console build=%s (contacts API: /api/contacts/list)", WEB_APP_BUILD)
+    try:
+        from src.auth import ensure_ashley, ensure_bootstrap_admin
+
+        ensure_bootstrap_admin()
+        ensure_ashley()
+    except Exception:
+        logger.exception("Admin bootstrap failed")
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from src.linux_audio import ensure_linux_call_audio
+
+            ensure_linux_call_audio()
+        except Exception:
+            logger.exception("Linux audio sinks were not created at startup")
+    try:
+        from src.gv_lines import ensure_line_profiles
+
+        ensure_line_profiles()
+    except Exception:
+        logger.exception("Chrome line profiles were not prepared")
 
 
 def main() -> None:
     import uvicorn  # type: ignore
 
     runtime_base()
+    host = _server_host()
+    if host not in {"127.0.0.1", "localhost", "::1"} and os.getenv(
+        "ROUTELIX_ALLOW_PUBLIC_BIND", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        raise SystemExit(
+            "Refusing to listen on a public interface. Keep ROUTELIX_HOST=127.0.0.1 "
+            "and publish the console through nginx."
+        )
     port = _server_port()
-    try:
-        from src.scripts.kill_port import kill_port  # type: ignore
+    if os.getenv("ROUTELIX_SERVER", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        try:
+            from src.scripts.kill_port import kill_port  # type: ignore
 
-        kill_port(port)
-    except Exception:
-        pass
+            kill_port(port)
+        except Exception:
+            pass
     uvicorn.run(
         "src.web_app:app",
-        host="127.0.0.1",
+        host=host,
         port=port,
         reload=False,
         log_level="info",

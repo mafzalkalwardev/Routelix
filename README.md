@@ -31,7 +31,7 @@ It dials from a Windows PC, talks with a local or API voice agent, detects voice
 
 `Routelix` `self-hosted AI auto dialer` `AI voice agent` `Google Voice auto dialer` `answering machine detection` `voicemail detection` `call recording CRM` `carrier CRM` `lead qualification` `local LLM cold caller` `Python FastAPI dialer` `open source alternative to Vapi` `Kokoro` `Piper TTS` `faster-whisper`
 
-Public page: https://mafzalkalwardev.github.io/Routelix/
+Public page: https://routelix.induswebagency.com/
 
 The full search, answer, and generative-engine map, including the question-style queries, is in [docs/ROUTELIX_SEO_AEO_GEO.md](docs/ROUTELIX_SEO_AEO_GEO.md).
 
@@ -105,6 +105,35 @@ Every operator tab, then the CRM list and a profile with sample records.
 - Windows EXE build with PyInstaller.
 - Desktop shortcut and Windows Startup shortcut installer.
 - Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, greeting library, and realtime loop behavior.
+
+---
+
+## Linux VPS (routelix.induswebagency.com)
+
+The operator console can run on Ubuntu 24.04, including aarch64, behind nginx. Google Chrome has no Linux arm64 build, so the server uses Chromium. Windows VB-CABLE support is unchanged.
+
+Exact steps on the server:
+
+```bash
+sudo mkdir -p /opt/routelix
+sudo chown "$USER" /opt/routelix
+git clone <this-repo> /opt/routelix
+cd /opt/routelix
+sudo bash deploy/linux/install.sh
+sudoedit /opt/routelix/.env   # set ROUTELIX_ADMIN_PASSWORD; add GROQ_API_KEY only if you want cloud STT/LLM
+sudo systemctl restart routelix-audio routelix
+curl -fsS http://127.0.0.1:8787/healthz
+sudo cp deploy/linux/nginx/routelix-upgrade.conf /etc/nginx/conf.d/routelix-upgrade.conf
+sudo cp deploy/linux/nginx/routelix.conf /etc/nginx/sites-available/routelix
+sudo ln -sfn /etc/nginx/sites-available/routelix /etc/nginx/sites-enabled/routelix
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d routelix.induswebagency.com
+sudo -u routelix bash deploy/linux/gv-login.sh sales_profile
+```
+
+Then from a laptop, `ssh -L 6081:127.0.0.1:6081 <user>@<server>` and open `http://127.0.0.1:6081/vnc.html` to finish the Google Voice sign-in once. Routelix uses X display `:98` (`ROUTELIX_DISPLAY` in `.env`, or `DISPLAY` when that is unset). Display `:99` is laneora-chrome and is not used. VNC and noVNC default to ports 5902 and 6081. Copying an already signed-in Chromium profile (`python -m src.gv_session import-profile`) is the other supported path. A cookie file is best-effort and Google often rejects it.
+
+`deploy/linux/.env.example` lists every variable. The unit listens on `127.0.0.1:8787` with `MemoryMax=8G` and `Restart=always`. Full notes, including the Pulse/PipeWire route and what still cannot be headless, are in [deploy/linux/README.md](deploy/linux/README.md).
 
 ---
 
@@ -508,32 +537,11 @@ Common `dialer_config.json` values:
 
 For 24/7 calling, keep `min_ring_seconds` above zero, use a cooldown, and do not rapid-fire failed numbers.
 
-### Controlled parallel calling
+### One Google Voice account
 
-Parallel mode uses a fixed worker per Chrome profile and pulls contacts from one shared queue. Configure one logged-in Google Voice profile and one isolated audio route for every slot:
+Settings has a single account, Main line. It places one live call. The dashboard reports CPU and RAM headroom after the reserved budget, and that headroom does not start a second line.
 
-```json
-{
-  "n_slots": 2,
-  "max_concurrent_dials": 5,
-  "parallel_profiles": [
-    {
-      "profile_name": "sales_line_1",
-      "loopback_device": "CABLE-A Input",
-      "capture_device": "CABLE-A Output"
-    },
-    {
-      "profile_name": "sales_line_2",
-      "loopback_device": "CABLE-B Input",
-      "capture_device": "CABLE-B Output"
-    }
-  ]
-}
-```
-
-The dialer applies the source Auto Dialer RAM/Chrome slot recommendation unless `force_requested_slots` is explicitly enabled. Shared audio routes are rejected by default because one AI response would otherwise be broadcast into multiple calls.
-
-Google Voice accounts can be managed from **Settings → Google Voice Accounts**. Each enabled account automatically becomes a calling slot and receives different contacts from the shared queue. Use **Connect / Verify** once to establish its persistent Chrome session. Saved passwords are protected with Windows DPAPI for the current Windows user and are never returned by the web API; Google MFA, CAPTCHA, and security challenges still require completion in the visible Chrome window. For two or more simultaneous AI conversations, configure a distinct loopback and capture device pair on every account.
+Use **Connect / Verify** once to establish the Chrome session. Saved passwords are protected with Windows DPAPI on Windows and are never returned by the web API. A Google verification step still has to be finished in the browser window.
 
 ---
 

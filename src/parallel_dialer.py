@@ -19,6 +19,8 @@ class ParallelSlotConfig:
     capture_device: str
     account_id: str = ""
     account_email: str = ""
+    pulse_sink: str = ""
+    pulse_source: str = ""
 
 
 def build_parallel_slots(
@@ -63,6 +65,8 @@ def build_parallel_slots(
             index, profile, loopback, capture,
             str(entry.get("account_id") or ""),
             str(entry.get("account_email") or ""),
+            str(entry.get("pulse_sink") or ""),
+            str(entry.get("pulse_source") or ""),
         ))
 
     profiles = [slot.profile_name.casefold() for slot in slots]
@@ -90,12 +94,14 @@ class ParallelDialer:
         *,
         cooldown_min: float = 0.0,
         cooldown_max: float = 0.0,
+        restart_limit: int = 0,
     ) -> None:
         if not slots:
             raise ValueError("At least one parallel dialer slot is required.")
         self.slots = list(slots)
         self.cooldown_min = max(0.0, float(cooldown_min))
         self.cooldown_max = max(self.cooldown_min, float(cooldown_max))
+        self.restart_limit = max(0, int(restart_limit))
 
     def run(
         self,
@@ -115,9 +121,20 @@ class ParallelDialer:
 
         def slot_worker(slot: ParallelSlotConfig) -> None:
             context = None
+            crashes = 0
             try:
-                context = context_factory(slot)
                 while True:
+                    if context is None:
+                        try:
+                            context = context_factory(slot)
+                        except BaseException as exc:
+                            crashes += 1
+                            if crashes > self.restart_limit:
+                                with result_lock:
+                                    errors.append(exc)
+                                return
+                            time.sleep(min(2.0 * crashes, 8.0))
+                            continue
                     try:
                         index, item = work.get_nowait()
                     except queue.Empty:
@@ -126,13 +143,24 @@ class ParallelDialer:
                         result = process_item(slot, context, index, item)
                         with result_lock:
                             results.append(result)
+                        crashes = 0
+                    except BaseException as exc:
+                        crashes += 1
+                        try:
+                            context_close(slot, context)
+                        except Exception:
+                            pass
+                        context = None
+                        work.put((index, item))
+                        if crashes > self.restart_limit:
+                            with result_lock:
+                                errors.append(exc)
+                            return
+                        time.sleep(min(2.0 * crashes, 8.0))
                     finally:
                         work.task_done()
                     if not work.empty() and self.cooldown_max > 0:
                         time.sleep(random.uniform(self.cooldown_min, self.cooldown_max))
-            except BaseException as exc:
-                with result_lock:
-                    errors.append(exc)
             finally:
                 if context is not None:
                     context_close(slot, context)

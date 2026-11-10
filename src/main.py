@@ -193,7 +193,11 @@ def _run_audio_route_test(args: argparse.Namespace, cfg: Config) -> int:
 
     device_index = find_playable_loopback_device(loopback_device)
     if device_index is None:
-        print(f"[FAIL] No playable loopback output device found for '{loopback_device}'.")
+        from src.voice_playback import pulse_failure_detail
+
+        detail = pulse_failure_detail()
+        extra = f" {detail}" if detail else ""
+        print(f"[FAIL] No playable loopback output device found for '{loopback_device}'.{extra}")
         return 1
 
     try:
@@ -476,6 +480,7 @@ def _run_call(
                 validate_tts_output_device(loopback_device_index)
                 shared_tts = RealtimeTTS(
                     device_index=loopback_device_index,
+                    pulse_sink=loopback_device,
                     engine=tts_engine,
                     voice=tts_voice,
                     piper_model_path=piper_model_path,
@@ -858,6 +863,7 @@ def _handle_call_screening(
         if own_tts:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                pulse_sink=loopback_device,
                 engine=tts_engine,
                 voice=tts_voice,
                 piper_model_path=piper_model_path,
@@ -1035,6 +1041,7 @@ def _run_realtime_loop(
         else:
             tts = RealtimeTTS(
                 device_index=loopback_device_index,
+                pulse_sink=loopback_device,
                 engine=tts_engine,
                 voice=tts_voice,
                 piper_model_path=piper_model_path,
@@ -1433,8 +1440,12 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     logger = setup_logger()
     call_logger = CallLogger()
 
+    from src.linux_audio import map_windows_audio_name
+
     profile_name    = args.profile or cfg.profile_name
-    loopback_device = args.loopback_device or cfg.loopback_device
+    loopback_device = map_windows_audio_name(
+        args.loopback_device or cfg.loopback_device, kind="loopback"
+    )
     callback_number = args.callback_number or cfg.callback_number
     agent_name      = args.agent_name or cfg.agent_name
     company_name    = args.company_name or cfg.company_name
@@ -1446,7 +1457,10 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     offer = args.offer or cfg.call_offer or _INDUS_OFFER
     call_timeout    = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device  = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    capture_device  = safe_capture_hint(
+        map_windows_audio_name(args.capture_device or cfg.capture_device, kind="capture"),
+        loopback_device,
+    )
     tts_engine      = cfg.tts_engine
     tts_voice       = args.tts_voice or cfg.tts_voice
     piper_model_path = cfg.piper_model_path
@@ -1578,6 +1592,8 @@ def _run_parallel_live_batch(
             profile_name=slot.profile_name,
             headless=args.headless,
             avoid_page_reload=cfg.avoid_gv_page_reload,
+            pulse_sink=getattr(slot, "pulse_sink", "") or "",
+            pulse_source=getattr(slot, "pulse_source", "") or "",
         )
         with holder_lock:
             browser_holder.append(browser)
@@ -1626,6 +1642,13 @@ def _run_parallel_live_batch(
             index,
             contact.get("phone", ""),
         )
+        from src.account_pacing import PACER
+
+        allowed, reason = PACER.allow(slot.account_id or slot.profile_name)
+        if not allowed:
+            logger.info("[Slot %d] pacing hold: %s", slot.slot_id + 1, reason)
+            time.sleep(PACER.min_gap_s())
+        PACER.mark(slot.account_id or slot.profile_name)
         kwargs = dict(shared_call_kwargs)
         kwargs.update(
             loopback_device=slot.loopback_device,
@@ -1687,6 +1710,7 @@ def _run_parallel_live_batch(
         slots,
         cooldown_min=float(cfg.call_cooldown_seconds),
         cooldown_max=float(cfg.call_cooldown_seconds),
+        restart_limit=3,
     )
     scheduler.run(
         indexed_contacts,
@@ -1735,9 +1759,13 @@ def main() -> None:
         pass
     call_logger = CallLogger()
 
+    from src.linux_audio import map_windows_audio_name
+
     contact_path = Path(args.contacts or cfg.contacts_file)
     profile_name = args.profile or cfg.profile_name
-    loopback_device = args.loopback_device or cfg.loopback_device
+    loopback_device = map_windows_audio_name(
+        args.loopback_device or cfg.loopback_device, kind="loopback"
+    )
     callback_number = args.callback_number or cfg.callback_number
     agent_name = args.agent_name or cfg.agent_name
     company_name = args.company_name or cfg.company_name
@@ -1749,7 +1777,10 @@ def main() -> None:
     offer = args.offer or cfg.call_offer or _INDUS_OFFER
     call_timeout = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    capture_device = safe_capture_hint(
+        map_windows_audio_name(args.capture_device or cfg.capture_device, kind="capture"),
+        loopback_device,
+    )
     tts_engine = cfg.tts_engine
     tts_voice = args.tts_voice or cfg.tts_voice
     piper_model_path = cfg.piper_model_path
@@ -1781,6 +1812,11 @@ def main() -> None:
         fingerprint,
         resume=not args.no_resume,
     )
+    from src.lead_crm import filter_callable
+
+    contacts, dnc_skipped = filter_callable(contacts)
+    if dnc_skipped:
+        logger.info("Do-not-call list skipped %d contact(s)", dnc_skipped)
     if cfg.use_call_intelligence:
         from src.call_intelligence import filter_dialable_contacts
 
@@ -1810,30 +1846,33 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
-    # Settings-page accounts are the source of truth for live worker slots.
-    # Each enabled account owns a persistent Chrome profile and isolated audio route.
+    # One Google Voice account, one live call. Host headroom is logged and is
+    # not used to open a second line.
+    from src.capacity import capacity_report, google_voice_concurrent_calls
     from src.gv_accounts import load_accounts
     enabled_accounts = [row for row in load_accounts(include_password=True) if row.get("enabled")]
     account_by_profile = {str(row["profile_name"]).casefold(): row for row in enabled_accounts}
-    account_parallel_profiles = [
-        {
-            "profile_name": row["profile_name"],
-            "loopback_device": row["loopback_device"],
-            "capture_device": row["capture_device"],
-            "account_id": row["id"],
-            "account_email": row["email"],
-        }
-        for row in enabled_accounts
-    ]
+    from src.agent_fleet import FLEET, prepare_slot_audio
+
+    fleet_plan = FLEET.plan(enabled_accounts)
     if enabled_accounts:
         first_account = enabled_accounts[0]
         profile_name = first_account["profile_name"]
-        loopback_device = first_account["loopback_device"] or loopback_device
-        capture_device = first_account["capture_device"] or capture_device
+        if fleet_plan.slots:
+            loopback_device = fleet_plan.slots[0].loopback_device
+            capture_device = fleet_plan.slots[0].capture_device
+        else:
+            loopback_device = first_account["loopback_device"] or loopback_device
+            capture_device = first_account["capture_device"] or capture_device
+        for slot in fleet_plan.slots:
+            prepare_slot_audio(slot)
         logger.info(
-            "Account manager enabled %d Google Voice account(s): %s",
+            "Fleet admitted %d of %d Google Voice account(s) (max %d, queued %d): %s",
+            len(fleet_plan.slots),
             len(enabled_accounts),
-            ", ".join(row["email"] for row in enabled_accounts),
+            fleet_plan.max_agents,
+            len(fleet_plan.queued_accounts),
+            ", ".join(slot.email or slot.profile_name for slot in fleet_plan.slots),
         )
 
     # Auto-route Windows mic/speakers first, then resolve PortAudio cable names.
@@ -1849,7 +1888,15 @@ def main() -> None:
 
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    requested_slots = len(enabled_accounts) if enabled_accounts else int(cfg.n_slots)
+    from src.gv_lines import line_count, parallel_profiles
+
+    requested_slots = line_count()
+    logger.info(
+        "Live agents=%d. Each Google Voice account places %d call at a time. %s",
+        requested_slots,
+        google_voice_concurrent_calls(),
+        capacity_report(),
+    )
     parallel_requested = requested_slots > 1
     if not loopback_available and not parallel_requested:
         logger.warning(
@@ -1858,6 +1905,17 @@ def main() -> None:
             loopback_device,
         )
     if not args.dry_run and not loopback_available and not parallel_requested:
+        if sys.platform.startswith("linux"):
+            from src.voice_playback import pulse_failure_detail
+
+            detail = pulse_failure_detail()
+            extra = f" {detail}" if detail else ""
+            raise SystemExit(
+                "Live calling needs the Pulse sink "
+                f"'{loopback_device}' (pacat/paplay, not a PortAudio device name). "
+                "Start routelix-audio.service and run: python -m src.main --audio-route-test."
+                + extra
+            )
         raise SystemExit(
             "Live calling needs an output loopback device so TTS reaches Google Voice. "
             "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "
@@ -1963,12 +2021,12 @@ def main() -> None:
     try:
         parallel_slots = build_parallel_slots(
             requested=requested_slots,
-            max_concurrent_dials=cfg.max_concurrent_dials,
-            force_requested_slots=cfg.force_requested_slots,
+            max_concurrent_dials=requested_slots,
+            force_requested_slots=requested_slots > 1,
             primary_profile=profile_name,
             primary_loopback=loopback_device,
             primary_capture=capture_device,
-            parallel_profiles=(account_parallel_profiles or cfg.parallel_profiles),
+            parallel_profiles=parallel_profiles(requested_slots) if requested_slots > 1 else [],
             allow_shared_audio_routes=cfg.allow_shared_audio_routes,
         )
     except ValueError as exc:
@@ -1999,10 +2057,13 @@ def main() -> None:
         logger.info("All parallel calls complete. Logs: logs/call_logs.csv | Audio: %s/", output_dir)
         return
 
+    first_slot = fleet_plan.slots[0] if fleet_plan.slots else None
     browser = GoogleVoiceBrowser(
         profile_name=profile_name,
         headless=args.headless,
         avoid_page_reload=cfg.avoid_gv_page_reload,
+        pulse_sink=first_slot.pulse_sink if first_slot else "",
+        pulse_source=first_slot.pulse_source if first_slot else "",
     )
     browser_holder.append(browser)
     logger.info("Launching Chrome profile: %s", profile_name)
