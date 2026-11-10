@@ -109,8 +109,12 @@ VOICEMAIL_KEYWORDS = (
     "try your call again",
     "mailbox is full",
     "voice message system",
-    "thanks for calling",
 )
+
+# Uninterrupted speech this long, during the opening hold, is a scripted
+# greeting. The hold only watches about 3.2s and treats a 280ms pause as a
+# person, so this flag has to flip while the greeting is still being spoken.
+LONG_GREETING_SECONDS = 2.8
 
 # Carrier / Google Voice style: "Telephone number 417… can't take your call"
 _CARRIER_TELEPHONE_NUMBER = (
@@ -569,10 +573,16 @@ class VoicemailAudioClassifier:
 
         speech_s = self._speech_frames * self._frame_ms / 1000.0
         silence_s = self._silence_frames * self._frame_ms / 1000.0
+        continuous_s = self._continuous_speech_frames * self._frame_ms / 1000.0
 
-        # A mailbox monologue runs for several seconds and then stops before
-        # the beep. A 240 ms pause, or a steady RMS, is not that pattern:
-        # live callers pause constantly, and line noise is steady too.
+        # The opening hold confirms a long greeting only while speech is still
+        # going. A 450 ms pause cannot be the signal: the hold already treats
+        # 280 ms of silence as a live person and starts the sales line.
+        if continuous_s >= LONG_GREETING_SECONDS:
+            self.machine_pattern_detected = True
+
+        # A mailbox monologue that then actually stops is the later evidence
+        # path. A 240 ms pause, or a steady RMS, is not that pattern.
         if speech_s >= 5.0 and silence_s >= 0.45:
             self.machine_pattern_detected = True
             return _VM_LABEL_GREETING

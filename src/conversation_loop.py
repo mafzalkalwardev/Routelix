@@ -34,6 +34,7 @@ from src.realtime_tts import RealtimeTTS
 from src.stt import GroqWhisperSTT
 from src.vad import EnergyVAD, VADConfig
 from src.voicemail_detector import (
+    LONG_GREETING_SECONDS,
     VoicemailAudioClassifier,
     VoicemailDetector,
     campaign_reason,
@@ -436,7 +437,7 @@ class ConversationLoop:
             duration = detector.continuous_greeting_duration_seconds
             if duration >= 0.2:
                 heard_speech = True
-            if duration >= 2.8 and detector.machine_pattern_detected:
+            if duration >= LONG_GREETING_SECONDS and detector.machine_pattern_detected:
                 self._confirm_voicemail("long scripted greeting", 0.9)
                 return
             if heard_speech and detector.trailing_silence_seconds >= 0.28:

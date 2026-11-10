@@ -69,10 +69,32 @@ def test_steady_noise_and_steady_vowel_are_not_a_mailbox_greeting():
     assert clf.machine_pattern_detected is False
 
     clf.reset()
-    vowel = _vowel(4.0)
-    labels = [clf.process_frame(frame, samplerate=16000) for frame in _frames(vowel)]
+    # A hello that pauses is not a scripted greeting.
+    short = np.concatenate([_vowel(1.0), np.zeros(int(16000 * 0.4), dtype=np.float32)])
+    labels = [clf.process_frame(frame, samplerate=16000) for frame in _frames(short)]
     assert clf.machine_pattern_detected is False
     assert "voicemail_greeting" not in labels
+
+
+def test_uninterrupted_speech_sets_the_opening_hold_flag_without_a_pause():
+    from src.voicemail_detector import LONG_GREETING_SECONDS
+
+    clf = VoicemailAudioClassifier()
+    vowel = _vowel(LONG_GREETING_SECONDS + 0.15)
+    labels = [clf.process_frame(frame, samplerate=16000) for frame in _frames(vowel)]
+    assert clf.machine_pattern_detected is True
+    assert clf.continuous_greeting_duration_seconds >= LONG_GREETING_SECONDS
+    # Still talking, so this is not yet the post-greeting label.
+    assert labels[-1] != "voicemail_greeting"
+
+
+def test_thanks_for_calling_alone_is_a_live_greeting():
+    live = "Thanks for calling Acme, how may I help?"
+    mailbox = "Thanks for calling. Please leave a message after the beep."
+    assert VoicemailDetector.keyword_count(live) == 0
+    assert classify_transcript(live) == "human"
+    assert VoicemailDetector.keyword_count(mailbox) >= 1
+    assert classify_transcript(mailbox) == "machine"
 
 
 def test_ivr_press_one_is_machine_and_okay_is_human():
