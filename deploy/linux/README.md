@@ -62,7 +62,7 @@ Open `https://routelix.induswebagency.com/`, then log in at `/login`.
 
 ## 5. Google Voice sign-in (manual, once per profile)
 
-Headless Chromium cannot finish a Google password, 2FA, or robot check. Two supported options:
+Connect types the email and password. Google's password page is `/signin/challenge/pwd`; that URL is the password form, not a second factor. An authenticator prompt, phone prompt, device prompt, security key, or captcha still has to be finished by a person. Two supported options:
 
 **Interactive noVNC, localhost only**
 
@@ -106,7 +106,11 @@ Two PipeWire issues block that playback until the deploy files are installed:
 - A system service has no interactive logind seat. WirePlumber's default `with-logind=true` makes it disconnect, the null sink stays `SUSPENDED`, and `paplay` waits forever. `bluetooth.lua.d/51-no-logind.lua` turns that off.
 - Idle sinks are suspended after a few seconds. The null sinks are created with `session.suspend-timeout-seconds=0` (space-separated `sink_properties`; commas are ignored). WirePlumber 0.4 and 0.5 drop-ins repeat that rule.
 
-`routelix-audio.service` starts PipeWire, WirePlumber, and pipewire-pulse, then loads the sinks.
+`routelix-audio.service` starts a session D-Bus, then PipeWire, WirePlumber, and pipewire-pulse. It loads `routelix_to_gv` and `routelix_from_gv` only when those sink names are absent, and sets them as the default sink and the default source (`routelix_from_gv.monitor`).
+
+`routelix.service` keeps `PrivateTmp=true` and bind-mounts `/tmp/.X11-unix` so Chromium can open the Xvfb display (`DISPLAY=:99`). `NoNewPrivileges=true` blocks Chromium's setuid sandbox, so the unit sets `ROUTELIX_CHROMIUM_NO_SANDBOX=1`.
+
+A saved Windows device name is rewritten on Linux: `CABLE-A Input` and `CABLE Input` become `routelix_to_gv` (TTS playback, the VB-CABLE input). `CABLE-A Output` and `CABLE Output` become `routelix_from_gv.monitor` (call capture, the VB-CABLE output). Numbered per-agent sinks are left as they are.
 
 After pulling this update on a box that already ran the audio service:
 

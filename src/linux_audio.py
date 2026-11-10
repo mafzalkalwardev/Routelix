@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import wave
 from pathlib import Path
@@ -24,6 +25,24 @@ SINK_TO_GV = "routelix_to_gv"
 SINK_FROM_GV = "routelix_from_gv"
 TTS_MONITOR = f"{SINK_TO_GV}.monitor"
 CAPTURE_MONITOR = f"{SINK_FROM_GV}.monitor"
+
+# VB-CABLE names saved on Windows. On Linux the same route is two null sinks:
+# "CABLE-A Input" is where TTS is played, "CABLE-A Output" is what the call is heard on.
+_WINDOWS_LOOPBACK = frozenset({"cable input", "cable a input"})
+_WINDOWS_CAPTURE = frozenset({"cable output", "cable a output"})
+
+
+def map_windows_audio_name(name: str, *, kind: str) -> str:
+    """Replace a Windows VB-CABLE device name with the Linux null sink."""
+    raw = (name or "").strip()
+    if not raw or not sys.platform.startswith("linux"):
+        return raw
+    key = " ".join(raw.casefold().replace("-", " ").replace("_", " ").split())
+    if kind == "loopback" and key in _WINDOWS_LOOPBACK:
+        return SINK_TO_GV
+    if kind == "capture" and key in _WINDOWS_CAPTURE:
+        return CAPTURE_MONITOR
+    return raw
 _LISTEN_TAG = "routelix_listen_in"
 _players: list[subprocess.Popen] = []
 _players_lock = threading.Lock()

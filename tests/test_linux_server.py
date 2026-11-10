@@ -140,3 +140,63 @@ def test_reserved_ports_are_refused(monkeypatch):
         raise AssertionError("reserved port was accepted")
     assert 27017 in RESERVED_PORTS
     assert 8787 not in RESERVED_PORTS
+
+
+def test_password_page_is_not_a_verification_challenge():
+    from src.google_voice import is_google_verification_challenge
+
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/v3/signin/challenge/pwd"
+    ) is False
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/signin/v2/challenge/pwd?flowName=GlifWebSignIn"
+    ) is False
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/v3/signin/challenge/totp"
+    ) is True
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/signin/challenge/ipp/consent"
+    ) is True
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/v3/signin/challenge/selection"
+    ) is True
+    assert is_google_verification_challenge(
+        "https://accounts.google.com/signin/identifier"
+    ) is False
+
+
+def test_linux_unit_exposes_xvfb_and_disables_chromium_sandbox():
+    unit = (Path(__file__).resolve().parents[1] / "deploy/linux/routelix.service").read_text(
+        encoding="utf-8"
+    )
+    assert "PrivateTmp=true" in unit
+    assert "BindPaths=/tmp/.X11-unix" in unit
+    assert "Environment=DISPLAY=:99" in unit
+    assert "Environment=ROUTELIX_CHROMIUM_NO_SANDBOX=1" in unit
+    assert unit.index("EnvironmentFile=") < unit.index("Environment=ROUTELIX_CHROMIUM_NO_SANDBOX=1")
+    assert "NoNewPrivileges=true" in unit
+
+
+def test_audio_daemon_starts_dbus_and_does_not_duplicate_sinks():
+    script = (Path(__file__).resolve().parents[1] / "deploy/linux/audio-daemon.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "dbus-daemon --session" in script
+    assert "sink_exists" in script
+    assert "set-default-sink routelix_to_gv" in script
+    assert "set-default-source routelix_from_gv.monitor" in script
+    assert script.index("if sink_exists") < script.index("load-module module-null-sink")
+
+
+def test_windows_cable_names_map_to_the_linux_sinks():
+    from src.linux_audio import map_windows_audio_name
+
+    if not sys.platform.startswith("linux"):
+        assert map_windows_audio_name("CABLE-A Input", kind="loopback") == "CABLE-A Input"
+        return
+    assert map_windows_audio_name("CABLE-A Input", kind="loopback") == "routelix_to_gv"
+    assert map_windows_audio_name("CABLE Input", kind="loopback") == "routelix_to_gv"
+    assert map_windows_audio_name("CABLE-A Output", kind="capture") == "routelix_from_gv.monitor"
+    assert map_windows_audio_name("CABLE Output", kind="capture") == "routelix_from_gv.monitor"
+    assert map_windows_audio_name("routelix_to_gv_2", kind="loopback") == "routelix_to_gv_2"
+    assert map_windows_audio_name("CABLE-B Input", kind="loopback") == "CABLE-B Input"

@@ -579,6 +579,10 @@ def _build_run_args(
     dry_run: bool,
     headless: bool = True,
 ) -> List[str]:
+    from src.linux_audio import map_windows_audio_name
+
+    loopback = map_windows_audio_name(loopback, kind="loopback")
+    capture = map_windows_audio_name(capture, kind="capture")
     args = [
         "--contacts", contacts,
         "--profile", profile,

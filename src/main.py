@@ -1440,8 +1440,12 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     logger = setup_logger()
     call_logger = CallLogger()
 
+    from src.linux_audio import map_windows_audio_name
+
     profile_name    = args.profile or cfg.profile_name
-    loopback_device = args.loopback_device or cfg.loopback_device
+    loopback_device = map_windows_audio_name(
+        args.loopback_device or cfg.loopback_device, kind="loopback"
+    )
     callback_number = args.callback_number or cfg.callback_number
     agent_name      = args.agent_name or cfg.agent_name
     company_name    = args.company_name or cfg.company_name
@@ -1453,7 +1457,10 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     offer = args.offer or cfg.call_offer or _INDUS_OFFER
     call_timeout    = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device  = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    capture_device  = safe_capture_hint(
+        map_windows_audio_name(args.capture_device or cfg.capture_device, kind="capture"),
+        loopback_device,
+    )
     tts_engine      = cfg.tts_engine
     tts_voice       = args.tts_voice or cfg.tts_voice
     piper_model_path = cfg.piper_model_path
@@ -1752,9 +1759,13 @@ def main() -> None:
         pass
     call_logger = CallLogger()
 
+    from src.linux_audio import map_windows_audio_name
+
     contact_path = Path(args.contacts or cfg.contacts_file)
     profile_name = args.profile or cfg.profile_name
-    loopback_device = args.loopback_device or cfg.loopback_device
+    loopback_device = map_windows_audio_name(
+        args.loopback_device or cfg.loopback_device, kind="loopback"
+    )
     callback_number = args.callback_number or cfg.callback_number
     agent_name = args.agent_name or cfg.agent_name
     company_name = args.company_name or cfg.company_name
@@ -1766,7 +1777,10 @@ def main() -> None:
     offer = args.offer or cfg.call_offer or _INDUS_OFFER
     call_timeout = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
+    capture_device = safe_capture_hint(
+        map_windows_audio_name(args.capture_device or cfg.capture_device, kind="capture"),
+        loopback_device,
+    )
     tts_engine = cfg.tts_engine
     tts_voice = args.tts_voice or cfg.tts_voice
     piper_model_path = cfg.piper_model_path

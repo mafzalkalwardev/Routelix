@@ -182,8 +182,11 @@ class Config:
         loop_fallback = _DEFAULTS["loopback_device"]
         if _server_mode() and "LOOPBACK_DEVICE" not in os.environ and "loopback_device" not in j:
             loop_fallback = "routelix_to_gv"
-        self.loopback_device: str = os.getenv(
-            "LOOPBACK_DEVICE", j.get("loopback_device", loop_fallback)
+        from src.linux_audio import map_windows_audio_name
+
+        self.loopback_device: str = map_windows_audio_name(
+            os.getenv("LOOPBACK_DEVICE", j.get("loopback_device", loop_fallback)),
+            kind="loopback",
         )
         self.call_timeout: int = int(
             os.getenv("CALL_TIMEOUT", j.get("call_timeout", _DEFAULTS["call_timeout"]))
@@ -194,8 +197,9 @@ class Config:
         capture_fallback = _DEFAULTS["capture_device"]
         if _server_mode() and "CAPTURE_DEVICE" not in os.environ and "capture_device" not in j:
             capture_fallback = "routelix_from_gv.monitor"
-        self.capture_device: str = os.getenv(
-            "CAPTURE_DEVICE", j.get("capture_device", capture_fallback)
+        self.capture_device: str = map_windows_audio_name(
+            os.getenv("CAPTURE_DEVICE", j.get("capture_device", capture_fallback)),
+            kind="capture",
         )
         tts_fallback = _DEFAULTS["tts_engine"]
         if _server_mode() and "TTS_ENGINE" not in os.environ and "tts_engine" not in j:

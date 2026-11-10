@@ -141,14 +141,20 @@ def make_profile_name(name: str, email: str) -> str:
 
 
 def _normalize(row: dict[str, Any]) -> dict[str, Any]:
+    from src.linux_audio import map_windows_audio_name
+
     email = str(row.get("email") or "").strip()
     return {
         "id": str(row.get("id") or uuid.uuid4().hex),
         "name": str(row.get("name") or email or "Google Voice").strip(),
         "email": email,
         "profile_name": str(row.get("profile_name") or make_profile_name("", email)).strip(),
-        "loopback_device": str(row.get("loopback_device") or "").strip(),
-        "capture_device": str(row.get("capture_device") or "").strip(),
+        "loopback_device": map_windows_audio_name(
+            str(row.get("loopback_device") or ""), kind="loopback"
+        ),
+        "capture_device": map_windows_audio_name(
+            str(row.get("capture_device") or ""), kind="capture"
+        ),
         "enabled": bool(row.get("enabled", True)),
         "password_enc": str(row.get("password_enc") or ""),
     }

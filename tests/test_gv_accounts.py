@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -18,6 +19,22 @@ def test_account_password_is_encrypted_and_redacted(tmp_path, monkeypatch):
     assert "password" not in saved
     assert "not-plain-text" not in account_file.read_text(encoding="utf-8")
     assert accounts.load_accounts(include_password=True)[0]["password"] == "not-plain-text"
+
+
+def test_windows_cable_a_is_stored_as_the_linux_route(tmp_path, monkeypatch):
+    monkeypatch.setattr(accounts, "ACCOUNTS_FILE", tmp_path / "gv_accounts.json")
+    saved = accounts.save_account({
+        "email": "line@example.com",
+        "profile_name": "line_one",
+        "loopback_device": "CABLE-A Input",
+        "capture_device": "CABLE-A Output",
+    })
+    if sys.platform.startswith("linux"):
+        assert saved["loopback_device"] == "routelix_to_gv"
+        assert saved["capture_device"] == "routelix_from_gv.monitor"
+    else:
+        assert saved["loopback_device"] == "CABLE-A Input"
+        assert saved["capture_device"] == "CABLE-A Output"
 
 
 def test_duplicate_profile_is_rejected(tmp_path, monkeypatch):

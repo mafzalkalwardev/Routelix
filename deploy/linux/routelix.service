@@ -17,6 +17,11 @@ Environment=ROUTELIX_PORT=8787
 Environment=ROUTELIX_COOKIE_SECURE=1
 Environment=ROUTELIX_TRUST_PROXY=1
 EnvironmentFile=-@APP_DIR@/.env
+# NoNewPrivileges blocks Chromium's setuid sandbox, so the browser runs unsandboxed.
+# DISPLAY is the Xvfb screen from gv-login.sh. PrivateTmp hides /tmp/.X11-unix;
+# bind the host socket back in or Chromium cannot open that display.
+Environment=DISPLAY=:99
+Environment=ROUTELIX_CHROMIUM_NO_SANDBOX=1
 ExecStart=@APP_DIR@/.venv/bin/python -m src.web_app
 Restart=always
 RestartSec=5
@@ -24,6 +29,7 @@ MemoryMax=8G
 MemoryHigh=6G
 NoNewPrivileges=true
 PrivateTmp=true
+BindPaths=/tmp/.X11-unix
 
 [Install]
 WantedBy=multi-user.target
