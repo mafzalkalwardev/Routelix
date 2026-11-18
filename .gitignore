@@ -38,4 +38,3 @@ models/piper/*.onnx
 models/piper/*.onnx.json
 models/llm/
 models/stt/
-models/kokoro/

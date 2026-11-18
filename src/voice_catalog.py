@@ -44,7 +44,7 @@ SPANISH_PIPER = (
     VoiceChoice("piper", "es_MX-ald-medium", "es", "Spanish, Mexico, male, Ald, medium"),
     VoiceChoice("piper", "es_MX-claude-high", "es", "Spanish, Mexico, female, Claude, high"),
 )
-# Kokoro ids inside voices-v1.0.bin. The bin is downloaded, not committed.
+# Kokoro ids inside models/kokoro/voices-v1.0.bin. af_heart is Ashley's voice.
 ENGLISH_KOKORO = (
     VoiceChoice("kokoro", "af_heart", "en", "English, US, Heart"),
     VoiceChoice("kokoro", "af_bella", "en", "English, US, Bella"),
