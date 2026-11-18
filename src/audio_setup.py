@@ -17,8 +17,8 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import tempfile
-import winreg
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -59,7 +59,13 @@ def _flow_prefix(flow: str) -> str:
 
 
 def list_audio_endpoints(flow: str) -> list[AudioEndpoint]:
-    """Enumerate MMDevices endpoints from the registry."""
+    """Enumerate MMDevices endpoints from the registry. Empty on non-Windows."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
     root_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{flow}"
     out: list[AudioEndpoint] = []
     try:
@@ -266,6 +272,10 @@ def _speakers_endpoint_volume():
 
 def get_default_speaker_muted() -> Optional[bool]:
     """Return True/False if default Speakers are muted, or None on failure."""
+    if sys.platform != "win32":
+        from src.linux_audio import linux_speakers_muted
+
+        return linux_speakers_muted()
     try:
         return bool(_speakers_endpoint_volume().GetMute())
     except Exception as exc:
@@ -280,7 +290,14 @@ def set_default_speaker_muted(muted: bool) -> bool:
     WASAPI loopback capture still receives call audio while Speakers are muted
     on this Realtek/Windows stack, so recordings and STT keep both sides without
     blasting the room. Toggle listen-in in Routelix to unmute when you want to hear.
+
+    On Linux, muted=True removes the Pulse loopback to the default sink.
+    The virtual monitor used for recordings is unchanged.
     """
+    if sys.platform != "win32":
+        from src.linux_audio import set_linux_listen_in
+
+        return set_linux_listen_in(not muted)
     try:
         vol = _speakers_endpoint_volume()
         vol.SetMute(1 if muted else 0, None)
@@ -373,6 +390,17 @@ def ensure_live_call_audio(
     When live_listen_enabled is False, Speakers are muted so you are not forced
     to hear both sides all day. Capture + recordings still get both voices.
     """
+    if sys.platform != "win32":
+        from src.linux_audio import ensure_linux_call_audio
+
+        return ensure_linux_call_audio(
+            loopback_hint=loopback_hint,
+            capture_hint=capture_hint,
+            chrome_profile_dir=chrome_profile_dir,
+            set_windows_devices=set_windows_devices,
+            live_listen_enabled=live_listen_enabled,
+        )
+
     result = AudioSetupResult(ok=False)
     loopback, capture, mic, speaker = resolve_live_route(loopback_hint, capture_hint)
     result.loopback_hint = loopback

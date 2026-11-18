@@ -3,6 +3,21 @@
 (function () {
   'use strict';
 
+  const csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+  if (csrfToken && window.fetch) {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = function (url, options) {
+      const opts = options ? Object.assign({}, options) : {};
+      const method = String(opts.method || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        const headers = new Headers(opts.headers || {});
+        if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', csrfToken);
+        opts.headers = headers;
+      }
+      return originalFetch(url, opts);
+    };
+  }
+
   // ── Topbar clock ─────────────────────────────────────────────────────────
   function startClock() {
     const el = document.getElementById('topbarClock');

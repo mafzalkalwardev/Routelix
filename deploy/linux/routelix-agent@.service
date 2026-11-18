@@ -1,0 +1,24 @@
+[Unit]
+Description=Routelix calling agent slot %i
+After=routelix-audio.service
+Wants=routelix-audio.service
+PartOf=routelix.service
+
+[Service]
+Type=simple
+User=routelix
+Group=routelix
+SupplementaryGroups=audio
+WorkingDirectory=@APP_DIR@
+Environment=XDG_RUNTIME_DIR=/run/routelix
+Environment=PULSE_SERVER=unix:/run/routelix/pulse/native
+Environment=ROUTELIX_AGENT_SLOT=%i
+EnvironmentFile=-@APP_DIR@/.env
+ExecStart=@APP_DIR@/.venv/bin/python -m src.agent_worker --slot %i
+Restart=always
+RestartSec=5
+MemoryMax=2G
+NoNewPrivileges=true
+
+[Install]
+WantedBy=routelix.service

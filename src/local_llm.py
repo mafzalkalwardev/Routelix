@@ -66,12 +66,12 @@ def get_llama(path: str | None = None):
             return _LLM
         from llama_cpp import Llama
 
-        # Use most CPU threads but leave headroom for STT/TTS on the same laptop.
+        # Leave cores for Chromium and faster-whisper. LLM_THREADS defaults to 2.
         try:
-            cpu = int(os.cpu_count() or 4)
-        except Exception:
-            cpu = 4
-        threads = max(2, min(6, cpu - 1))
+            threads = int(os.getenv("LLM_THREADS", "2"))
+        except ValueError:
+            threads = 2
+        threads = max(1, min(threads, int(os.cpu_count() or 2)))
         try:
             ctx = int(os.getenv("LOCAL_LLM_CTX", "2048"))
         except ValueError:
@@ -118,18 +118,27 @@ class LocalChatClient:
             self._outer = outer
 
         def create(self, **kwargs) -> _Completion:
+            from src.llm_queue import complete
+
             messages = _fit_messages(list(kwargs.get("messages") or []))
             max_tokens = int(kwargs.get("max_tokens") or 80)
             temperature = float(kwargs.get("temperature") if kwargs.get("temperature") is not None else 0.7)
-            llm = get_llama(self._outer._model_path)
-            result = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            content = ""
-            choices = result.get("choices") if isinstance(result, dict) else None
-            if choices:
-                message = choices[0].get("message") or {}
-                content = str(message.get("content") or "").strip()
+            # The queue owns the single loaded model (or the llama.cpp server).
+            os.environ.setdefault("LOCAL_LLM_PATH", self._outer._model_path or "")
+            content = complete(messages, max_tokens=max_tokens, temperature=temperature)
             return _Completion(content)
+
+
+def complete_local(messages: list, *, max_tokens: int = 80, temperature: float = 0.7) -> str:
+    """One in-process completion. Callers take the shared slot first."""
+    llm = get_llama()
+    result = llm.create_chat_completion(
+        messages=_fit_messages(list(messages)),
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    choices = result.get("choices") if isinstance(result, dict) else None
+    if not choices:
+        return ""
+    message = choices[0].get("message") or {}
+    return str(message.get("content") or "").strip()

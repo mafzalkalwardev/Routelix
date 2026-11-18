@@ -78,7 +78,7 @@ class ConversationLoop:
         answered_speak_delay: float = 0.0,
         wait_for_human_audio: bool = False,
         human_audio_timeout: float = 8.0,
-        listen_after_tts_delay_ms: int = 300,
+        listen_after_tts_delay_ms: int = 120,
         min_speech_seconds: float = 0.4,
         max_silence_seconds: float = 8.0,
         silence_does_not_end_call: bool = True,

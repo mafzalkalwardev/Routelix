@@ -68,6 +68,61 @@
   </div>
 </div>
 
+<div class="panel" id="fleetPanel">
+  <div class="panel-header">
+    <h3 class="panel-title">Main line</h3>
+    <span class="link-muted">1 live call · {{ capacity.bottleneck }} headroom</span>
+  </div>
+  <p class="page-sub">{{ capacity_report }}</p>
+  <div class="card-grid">
+    <div class="stat-card">
+      <div class="stat-body">
+        <div class="stat-label">Chrome lines</div>
+        <div class="stat-value" id="fleetMax">{{ capacity.configured_lines }}</div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-body">
+        <div class="stat-label">Active</div>
+        <div class="stat-value" id="fleetActive">{{ fleet.active_agents }}</div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-body">
+        <div class="stat-label">CPU headroom</div>
+        <div class="stat-value" id="fleetQueued">{{ capacity.cpu_agents }}</div>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-body">
+        <div class="stat-label">MB / agent</div>
+        <div class="stat-value">{{ capacity.per_agent_mb }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr><th>Agent</th><th>Account</th><th>State</th><th>Calls</th><th>Restarts</th><th>TTS sink</th></tr>
+      </thead>
+      <tbody id="fleetRows">
+        {% for slot in fleet.slots %}
+        <tr>
+          <td>{{ slot.index }}</td>
+          <td>{{ slot.email or slot.profile_name }}</td>
+          <td>{{ slot.state }}</td>
+          <td>{{ slot.active_calls }}</td>
+          <td>{{ slot.restarts }}</td>
+          <td>{{ slot.loopback_device }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">Main line is not connected yet. Save it under Settings. This install places one live call.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <!-- Recent calls table -->
 <div class="panel">
   <div class="panel-header">

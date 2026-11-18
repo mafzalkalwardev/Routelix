@@ -7,6 +7,8 @@
   <meta name="description" content="Routelix automates outbound sales campaigns with natural voice conversations, speech intelligence, lead capture, voicemail handling, and follow-up workflows." />
   <meta name="keywords" content="Routelix, sales automation, outbound sales automation, AI calling platform, voice AI sales agent, AI voice agent, automated sales campaigns, lead qualification automation, appointment setting automation, voicemail detection, answering machine detection, speech-to-text, text-to-speech, realtime voice AI, CRM automation, sales follow-up software" />
   <meta name="application-name" content="Routelix" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="csrf-token" content="{{ csrf_token(request) }}" />
   <link rel="manifest" href="/static/site.webmanifest" />
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="stylesheet" href="/static/dark-light.css" />
@@ -46,7 +48,7 @@
 
   <ul class="nav-list">
     <li class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">
-      <a href="/" class="nav-link">
+      <a href="/dashboard" class="nav-link">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
           <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
@@ -71,6 +73,12 @@
         </svg>
         Settings
       </a>
+    </li>
+    <li class="nav-item {% if active_page == 'scripts' %}active{% endif %}">
+      <a href="/scripts" class="nav-link">Script</a>
+    </li>
+    <li class="nav-item {% if active_page == 'voices' %}active{% endif %}">
+      <a href="/voices" class="nav-link">Voices</a>
     </li>
     <li class="nav-item {% if active_page == 'contacts' %}active{% endif %}">
       <a href="/contacts" class="nav-link">
@@ -165,9 +173,25 @@
 
   <div class="sidebar-footer">
     <div class="sidebar-footer-text">
+      {% set user = current_user(request) %}
+      {% if user %}
+        {{ user.username }}{% if user.role == 'admin' %} · admin{% endif %}<br>
+        <a href="/my">My work</a><br>
+        {% if user.role == 'admin' %}
+        <a href="/admin/crm">Admin CRM</a><br>
+        <a href="/admin/lines">Lines</a><br>
+        <a href="/admin/users">Users</a><br>
+        {% endif %}
+      {% endif %}
       Dev: <a href="https://wa.me/923079670503" target="_blank">Muhammad Afzal</a><br>
       ROUTELIX &mdash; v1.0
     </div>
+    {% if user %}
+    <form method="post" action="/logout" style="margin-top:8px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}" />
+      <button class="btn btn-ghost btn-sm" type="submit">Log out</button>
+    </form>
+    {% endif %}
   </div>
 </nav>
 

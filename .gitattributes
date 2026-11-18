@@ -1,0 +1,2 @@
+models/kokoro/kokoro-v1.0.onnx filter=lfs diff=lfs merge=lfs -text
+models/kokoro/voices-v1.0.bin filter=lfs diff=lfs merge=lfs -text

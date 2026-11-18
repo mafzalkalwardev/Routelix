@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import time
 from urllib.parse import urlparse
 from pathlib import Path
@@ -31,6 +32,63 @@ from src.call_session import CallSession, CallState
 
 BASE_DIR = runtime_base()
 GV_URL = "https://voice.google.com"
+
+# Google's password form lives at /signin/challenge/pwd. That path contains
+# "challenge" and is not a second factor. Only these verification steps are.
+_VERIFICATION_CHALLENGES = (
+    "/challenge/totp",
+    "/challenge/ipp",
+    "/challenge/dp",
+    "/challenge/sk",
+    "/challenge/selection",
+    "/challenge/recaptcha",
+    "/challenge/az",
+    "/challenge/kpe",
+    "/challenge/ootp",
+    "/challenge/iap",
+    "/challenge/pk",
+    "/challenge/webauthn",
+    "/challenge/bc",
+    "/challenge/wa",
+    "/challenge/sms",
+    "/challenge/skotp",
+)
+_EMAIL_SELECTORS = (
+    "input[type='email']",
+    "input#identifierId",
+    "input[name='identifier']",
+    "input[autocomplete='username']",
+)
+_PASSWORD_SELECTORS = (
+    "input[type='password']",
+    "input[name='Passwd']",
+    "input[name='password']",
+    "input[autocomplete='current-password']",
+)
+_EMAIL_NEXT_SELECTORS = (
+    "#identifierNext button",
+    "#identifierNext [role='button']",
+    "#identifierNext",
+    "xpath://button[@id='identifierNext']",
+    "xpath://*[@id='identifierNext']//button",
+    "xpath://button[.//span[normalize-space()='Next']]",
+)
+_PASSWORD_NEXT_SELECTORS = (
+    "#passwordNext button",
+    "#passwordNext [role='button']",
+    "#passwordNext",
+    "xpath://button[@id='passwordNext']",
+    "xpath://*[@id='passwordNext']//button",
+    "xpath://button[.//span[normalize-space()='Next']]",
+)
+
+
+def is_google_verification_challenge(url: str) -> bool:
+    """True for a real 2FA or verification page, false for the password form."""
+    path = (urlparse(url or "").path or "").lower()
+    if "/challenge/pwd" in path or path.rstrip("/").endswith("/pwd"):
+        return False
+    return any(marker in path for marker in _VERIFICATION_CHALLENGES)
 
 # Ring/answer timing defaults for call state machine (aligned with config.py)
 MIN_RING_SECONDS_DEFAULT = 2.0
@@ -241,6 +299,14 @@ def _install_chromedriver_with_retry() -> Optional[str]:
 
 
 def _create_chrome_driver(options: Options) -> webdriver.Chrome:
+    from src.browser_launch import apply_browser, chromedriver_service
+
+    apply_browser(options)
+    service = chromedriver_service()
+    if service is not None:
+        return webdriver.Chrome(service=service, options=options)
+    if sys.platform.startswith("linux"):
+        return webdriver.Chrome(options=options)
     driver_path = _install_chromedriver_with_retry()
     if driver_path:
         return webdriver.Chrome(service=Service(driver_path), options=options)
@@ -256,10 +322,14 @@ class GoogleVoiceBrowser:
         profile_name: str = "sales_profile",
         headless: bool = False,
         avoid_page_reload: bool = True,
+        pulse_sink: str = "",
+        pulse_source: str = "",
     ):
         self.profile_dir = BASE_DIR / "chrome_profiles" / profile_name
         self.headless = headless
         self.avoid_page_reload = avoid_page_reload
+        self.pulse_sink = pulse_sink
+        self.pulse_source = pulse_source
         self.driver: Optional[webdriver.Chrome] = None
 
     # ------------------------------------------------------------------
@@ -299,12 +369,27 @@ class GoogleVoiceBrowser:
             opts.add_argument("--use-fake-ui-for-media-stream")
             opts.add_argument("--autoplay-policy=no-user-gesture-required")
 
-        self.driver = _create_chrome_driver(opts)
+        from src.browser_launch import pulse_route
+
+        token = pulse_route.set((getattr(self, "pulse_sink", "") or "", getattr(self, "pulse_source", "") or ""))
+        try:
+            self.driver = _create_chrome_driver(opts)
+        finally:
+            pulse_route.reset(token)
 
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         self.driver.get(GV_URL)
+        try:
+            from src.gv_session import load_imported_cookies
+
+            added = load_imported_cookies(self.driver, self.profile_dir)
+            if added:
+                logger.info("Loaded %d staged Google Voice cookies into the browser profile", added)
+                self.driver.get(GV_URL)
+        except Exception as exc:
+            logger.warning("Staged cookie import failed: %s", exc)
         time.sleep(3)
 
     def close(self) -> None:
@@ -380,8 +465,8 @@ class GoogleVoiceBrowser:
                         from src.gv_accounts import mark_session_ready
                         mark_session_ready(self.profile_dir.name)
                         return "ready"
-                    url = (self.driver.current_url or "").lower()
-                    if "challenge" in url or "signin/v2/challenge" in url:
+                    url = self.driver.current_url or ""
+                    if is_google_verification_challenge(url):
                         if not verification_logged:
                             logger.warning(
                                 "Google verification required for %s; complete it in the Chrome window",
@@ -390,22 +475,21 @@ class GoogleVoiceBrowser:
                             verification_logged = True
                         time.sleep(1)
                         continue
-                    if not email_sent:
-                        fields = self.driver.find_elements(By.CSS_SELECTOR, "input[type='email']")
-                        visible = next((el for el in fields if el.is_displayed()), None)
+                    on_password = "/challenge/pwd" in (urlparse(url).path or "").lower()
+                    if not email_sent and not on_password:
+                        visible = self._first_of(_EMAIL_SELECTORS)
                         if visible:
-                            visible.clear()
-                            visible.send_keys(email)
-                            visible.send_keys(Keys.ENTER)
+                            self._fill_login_field(visible, email)
+                            if not self._click_selectors(_EMAIL_NEXT_SELECTORS):
+                                visible.send_keys(Keys.ENTER)
                             email_sent = True
                             time.sleep(2)
                             continue
-                    fields = self.driver.find_elements(By.CSS_SELECTOR, "input[type='password']")
-                    visible = next((el for el in fields if el.is_displayed()), None)
+                    visible = self._first_of(_PASSWORD_SELECTORS)
                     if visible and not password_sent:
-                        visible.clear()
-                        visible.send_keys(password)
-                        visible.send_keys(Keys.ENTER)
+                        self._fill_login_field(visible, password)
+                        if not self._click_selectors(_PASSWORD_NEXT_SELECTORS):
+                            visible.send_keys(Keys.ENTER)
                         password_sent = True
                         time.sleep(3)
                         continue
@@ -431,6 +515,49 @@ class GoogleVoiceBrowser:
     # ------------------------------------------------------------------
     # Internal selector helpers
     # ------------------------------------------------------------------
+
+    def _first_of(self, selectors: tuple[str, ...]):
+        """Return the first displayed element matching a CSS selector or xpath: expression."""
+        if not self.driver:
+            return None
+        for sel in selectors:
+            try:
+                if sel.startswith("xpath:"):
+                    els = self.driver.find_elements(By.XPATH, sel[6:])
+                else:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+            except WebDriverException:
+                continue
+            for el in els:
+                try:
+                    if el.is_displayed():
+                        return el
+                except WebDriverException:
+                    continue
+        return None
+
+    def _click_selectors(self, selectors: tuple[str, ...]) -> bool:
+        element = self._first_of(selectors)
+        if element is None:
+            return False
+        try:
+            if not element.is_enabled():
+                return False
+            _js_click(self.driver, element)
+            return True
+        except WebDriverException:
+            return False
+
+    def _fill_login_field(self, element, value: str) -> None:
+        try:
+            element.click()
+        except WebDriverException:
+            pass
+        try:
+            element.clear()
+            element.send_keys(value)
+        except WebDriverException:
+            self._set_input_value(element, value)
 
     def _find_first(self, group: str, timeout: float = 5.0):
         """Try each selector in the group; return the first visible element."""
