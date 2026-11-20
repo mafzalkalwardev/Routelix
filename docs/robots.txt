@@ -43,4 +43,4 @@ Allow: /
 User-agent: CCBot
 Allow: /
 
-Sitemap: https://mafzalkalwardev.github.io/Routelix/sitemap.xml
+Sitemap: https://routelix.induswebagency.com/sitemap.xml

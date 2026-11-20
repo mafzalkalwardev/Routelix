@@ -9,3 +9,9 @@ include:
   - robots.txt
   - sitemap.xml
   - index.html
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      canonical_url: "https://routelix.induswebagency.com/"
