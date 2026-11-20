@@ -2,6 +2,8 @@
 
 # Routelix — self-hosted AI auto dialer, voice agent, and CRM
 
+Official site: https://routelix.induswebagency.com/
+
 <img src="src/static/routelix-logo.svg" alt="Routelix icon" width="180" />
 
 **Routelix is a self-hosted AI auto dialer and carrier CRM for outbound Google Voice campaigns.**
@@ -31,7 +33,7 @@ It dials from a Windows PC, talks with a local or API voice agent, detects voice
 
 `Routelix` `self-hosted AI auto dialer` `AI voice agent` `Google Voice auto dialer` `answering machine detection` `voicemail detection` `call recording CRM` `carrier CRM` `lead qualification` `local LLM cold caller` `Python FastAPI dialer` `open source alternative to Vapi` `Kokoro` `Piper TTS` `faster-whisper`
 
-Public page: https://mafzalkalwardev.github.io/Routelix/
+Official site: https://routelix.induswebagency.com/
 
 The full search, answer, and generative-engine map, including the question-style queries, is in [docs/ROUTELIX_SEO_AEO_GEO.md](docs/ROUTELIX_SEO_AEO_GEO.md).
 

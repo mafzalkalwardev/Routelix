@@ -23,12 +23,11 @@ The local speech path uses Kokoro or Piper for the voice, faster-whisper for tra
 
 ## Where search engines should read Routelix
 
-The public pages are:
+The official site is https://routelix.induswebagency.com/.
 
-- https://mafzalkalwardev.github.io/Routelix/
-- https://github.com/mafzalkalwardev/Routelix
+Source: https://github.com/mafzalkalwardev/Routelix
 
-Google, Bing, and answer engines can cite those URLs after they recrawl them. A new name often takes days to appear. The homepage repeats the product definition, the service list, and the question-style answers, and it includes FAQ schema for Google and for answer engines.
+Google, Bing, and answer engines can cite the official site after they recrawl it. A new name often takes days to appear. The homepage repeats the product definition, the service list, and the question-style answers, and it includes FAQ schema for Google and for answer engines.
 
 ## What is the cheapest AI auto dialer with CRM integration?
 
